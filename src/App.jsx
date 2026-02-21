@@ -42,6 +42,130 @@ const SPHERICAL_MAX_FOV = 100
 const CYLINDRICAL_DEFAULT_FOV = 54
 const CYLINDRICAL_MIN_FOV = 45
 const CYLINDRICAL_MAX_FOV = 140
+const EXIF_TAB_ORDER = ['basic', 'camera', 'capture', 'gps', 'panorama', 'other', 'all']
+const EXIF_TAB_LABELS = {
+  all: 'Wszystkie',
+  basic: 'Podstawowe',
+  camera: 'Aparat',
+  capture: 'Ekspozycja i data',
+  gps: 'GPS',
+  panorama: 'Panorama',
+  other: 'Pozostale',
+}
+
+const formatBytes = (bytes) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-'
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unitIdx = 0
+  while (value >= 1024 && unitIdx < units.length - 1) {
+    value /= 1024
+    unitIdx += 1
+  }
+  return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[unitIdx]}`
+}
+
+const toFiniteNumber = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string') {
+    const cleaned = value.replace(',', '.').trim()
+    if (!cleaned) return null
+    const parsed = Number(cleaned)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  if (Array.isArray(value) && value.length === 2) {
+    const a = toFiniteNumber(value[0])
+    const b = toFiniteNumber(value[1])
+    if (a == null || b == null || b === 0) return null
+    return a / b
+  }
+  if (value && typeof value === 'object') {
+    const n = toFiniteNumber(value.numerator ?? value.num ?? value.n)
+    const d = toFiniteNumber(value.denominator ?? value.den ?? value.d)
+    if (n != null && d != null && d !== 0) return n / d
+    const direct = toFiniteNumber(value.value)
+    if (direct != null) return direct
+  }
+  return null
+}
+
+const normalizeGpsCoordinate = (value, ref) => {
+  if (value == null) return null
+  let numeric = null
+
+  if (typeof value === 'number') {
+    numeric = toFiniteNumber(value)
+  } else if (typeof value === 'string') {
+    const cleaned = value.replace(',', '.').trim()
+    const parsed = Number(cleaned)
+    if (Number.isFinite(parsed)) {
+      numeric = parsed
+    } else {
+      const parts = cleaned
+        .match(/-?\d+(?:\.\d+)?/g)
+        ?.map((part) => Number(part))
+        ?.filter((part) => Number.isFinite(part))
+      if (parts?.length) {
+        const deg = Math.abs(parts[0] || 0)
+        const min = Math.abs(parts[1] || 0)
+        const sec = Math.abs(parts[2] || 0)
+        numeric = deg + min / 60 + sec / 3600
+      }
+    }
+  } else if (Array.isArray(value) && value.length > 0) {
+    const parts = value.map((part) => toFiniteNumber(part)).filter((part) => Number.isFinite(part))
+    if (parts.length > 0) {
+      const deg = Math.abs(parts[0] || 0)
+      const min = Math.abs(parts[1] || 0)
+      const sec = Math.abs(parts[2] || 0)
+      numeric = deg + min / 60 + sec / 3600
+    }
+  } else if (value && typeof value === 'object') {
+    const single = toFiniteNumber(value)
+    if (single != null) {
+      numeric = single
+    } else {
+      const deg = toFiniteNumber(value.deg ?? value.degree ?? value.degrees)
+      const min = toFiniteNumber(value.min ?? value.minute ?? value.minutes)
+      const sec = toFiniteNumber(value.sec ?? value.second ?? value.seconds)
+      if (deg != null) {
+        numeric = Math.abs(deg) + Math.abs(min || 0) / 60 + Math.abs(sec || 0) / 3600
+      }
+    }
+  }
+
+  if (!Number.isFinite(numeric)) return null
+  let hemisphere = String(ref || '').trim().toUpperCase()
+  if (!hemisphere && typeof value === 'string') {
+    const m = value.trim().toUpperCase().match(/[NSEW]/)
+    hemisphere = m ? m[0] : ''
+  }
+  if (hemisphere === 'S' || hemisphere === 'W') return -Math.abs(numeric)
+  if (hemisphere === 'N' || hemisphere === 'E') return Math.abs(numeric)
+  return numeric
+}
+
+const extractGpsCoords = (metadata) => {
+  if (!metadata || typeof metadata !== 'object') return null
+  const gps = metadata.gps && typeof metadata.gps === 'object' ? metadata.gps : null
+  const latRaw = gps?.latitude ?? metadata.latitude ?? metadata.Latitude ?? metadata.lat ?? metadata.GPSLatitude
+  const lonRaw = gps?.longitude ?? metadata.longitude ?? metadata.Longitude ?? metadata.lon ?? metadata.GPSLongitude
+  const latRef = gps?.latitudeRef ?? metadata.GPSLatitudeRef ?? metadata.LatitudeRef
+  const lonRef = gps?.longitudeRef ?? metadata.GPSLongitudeRef ?? metadata.LongitudeRef
+  const lat = normalizeGpsCoordinate(latRaw, latRef)
+  const lon = normalizeGpsCoordinate(lonRaw, lonRef)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null
+  if (Math.abs(lat) < 1e-9 && Math.abs(lon) < 1e-9) return null
+  return { lat, lon }
+}
+
+const hasGpsMetadata = (metadata) => {
+  if (!metadata || typeof metadata !== 'object') return false
+  if (metadata.gps && typeof metadata.gps === 'object') return true
+  return Object.keys(metadata).some((key) => /gps|latitude|longitude/i.test(key))
+}
 
 const openDb = () =>
   new Promise((resolve, reject) => {
@@ -129,8 +253,10 @@ const hashBufferSha256 = async (buffer) => {
 
 function App() {
   const containerRef = useRef(null)
+  const homeOverlayRef = useRef(null)
   const inputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const backupInputRef = useRef(null)
   const currentUrlRef = useRef(null)
   const loadedImageRef = useRef(null)
   const loadedMetaRef = useRef(null)
@@ -146,6 +272,9 @@ function App() {
   const dbRef = useRef(null)
   const rootDirHandleRef = useRef(null)
   const contextMenuRef = useRef(null)
+  const dragDepthRef = useRef(0)
+  const homeScrollTopRef = useRef(0)
+  const shouldRestoreHomeScrollRef = useRef(false)
 
   const dragStateRef = useRef({
     isPointerDown: false,
@@ -168,6 +297,7 @@ function App() {
   const [isExifOpen, setIsExifOpen] = useState(false)
   const [isExifLoading, setIsExifLoading] = useState(false)
   const [exifError, setExifError] = useState('')
+  const [exifTab, setExifTab] = useState('all')
   const [isBusy, setIsBusy] = useState(false)
   const [busyText, setBusyText] = useState('Ladowanie...')
   const [showTelemetry, setShowTelemetry] = useState(true)
@@ -185,6 +315,21 @@ function App() {
   const [panelSortOrder, setPanelSortOrder] = useState('desc')
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
+  const [indexedDbBytes, setIndexedDbBytes] = useState(null)
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false)
+  const [backupFile, setBackupFile] = useState(null)
+  const [importClearBefore, setImportClearBefore] = useState(false)
+  const [importLinkFolderAfter, setImportLinkFolderAfter] = useState(true)
+  const [importScanAfterLink, setImportScanAfterLink] = useState(false)
+  const [installPromptEvent, setInstallPromptEvent] = useState(null)
+  const [isInstalled, setIsInstalled] = useState(() => {
+    if (typeof window === 'undefined') return false
+    const standalone = window.matchMedia?.('(display-mode: standalone)')?.matches
+    // @ts-ignore
+    const iosStandalone = window.navigator?.standalone === true
+    return Boolean(standalone || iosStandalone)
+  })
+  const [activeHistoryId, setActiveHistoryId] = useState(null)
   const [contextMenu, setContextMenu] = useState({
     open: false,
     x: 0,
@@ -198,6 +343,33 @@ function App() {
     if (!folderInputRef.current) return
     folderInputRef.current.setAttribute('webkitdirectory', '')
     folderInputRef.current.setAttribute('directory', '')
+  }, [])
+
+  const reloadHistoryFromDb = async () => {
+    const db = dbRef.current
+    if (!db) return
+    const rows = await dbGetAll(db, PANORAMAS_STORE).catch(() => [])
+    const sorted = [...(rows || [])].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    setHistoryItems(sorted)
+  }
+
+  useEffect(() => {
+    const onBeforeInstallPrompt = (event) => {
+      event.preventDefault()
+      setInstallPromptEvent(event)
+    }
+    const onInstalled = () => {
+      setIsInstalled(true)
+      setInstallPromptEvent(null)
+      setStatus('Aplikacja zostala zainstalowana.')
+    }
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+    window.addEventListener('appinstalled', onInstalled)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', onInstalled)
+    }
   }, [])
 
   useEffect(() => {
@@ -389,10 +561,17 @@ function App() {
 
         const cleanedPanoramas = []
         for (const item of savedPanoramas || []) {
+          const normalizedPath = normalizeRelativePath(item?.relativePath || '')
+          const needsPathFix = (item?.relativePath || '') !== normalizedPath
           if (item?.fileBlob) {
-            const { fileBlob, ...trimmed } = item
+            const { fileBlob, ...rest } = item
+            const trimmed = { ...rest, relativePath: normalizedPath }
             cleanedPanoramas.push(trimmed)
             await dbPut(db, PANORAMAS_STORE, trimmed)
+          } else if (needsPathFix) {
+            const fixed = { ...item, relativePath: normalizedPath }
+            cleanedPanoramas.push(fixed)
+            await dbPut(db, PANORAMAS_STORE, fixed)
           } else {
             cleanedPanoramas.push(item)
           }
@@ -528,9 +707,27 @@ function App() {
     event.preventDefault()
     event.stopPropagation()
   }
+  const isFileDragEvent = (event) => {
+    const types = event?.dataTransfer?.types
+    if (!types) return false
+    return Array.from(types).includes('Files')
+  }
 
   const canUseFsApi = typeof window !== 'undefined' && 'showDirectoryPicker' in window
   const canUseOpenFilePicker = typeof window !== 'undefined' && 'showOpenFilePicker' in window
+
+  const normalizeRelativePath = (value) => {
+    if (!value) return ''
+    const raw = String(value).trim()
+    if (!raw) return ''
+    return raw
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/^\/+/, '')
+      .replace(/\/+/g, '/')
+  }
+
+  const splitRelativePath = (value) => normalizeRelativePath(value).split('/').filter(Boolean)
 
   const ensureReadPermission = async (handle) => {
     if (!handle) return false
@@ -546,27 +743,67 @@ function App() {
 
   const getFileFromRelativePath = async (rootHandle, relativePath) => {
     if (!rootHandle || !relativePath) return null
-    const parts = relativePath.split('/').filter(Boolean)
+    const parts = splitRelativePath(relativePath)
     if (parts.length === 0) return null
+    const candidates = [parts]
+    if (parts.length > 1) candidates.push(parts.slice(1))
 
-    let dir = rootHandle
-    for (let i = 0; i < parts.length - 1; i += 1) {
-      dir = await dir.getDirectoryHandle(parts[i], { create: false })
+    for (const candidateParts of candidates) {
+      try {
+        let dir = rootHandle
+        for (let i = 0; i < candidateParts.length - 1; i += 1) {
+          dir = await dir.getDirectoryHandle(candidateParts[i], { create: false })
+        }
+        const fileHandle = await dir.getFileHandle(candidateParts[candidateParts.length - 1], { create: false })
+        return fileHandle.getFile()
+      } catch {
+        // try next candidate
+      }
     }
-    const fileHandle = await dir.getFileHandle(parts[parts.length - 1], { create: false })
-    return fileHandle.getFile()
+    return null
   }
 
   const getDirectoryFromRelativePath = async (rootHandle, relativePath) => {
     if (!rootHandle || !relativePath) return null
-    const parts = relativePath.split('/').filter(Boolean)
+    const parts = splitRelativePath(relativePath)
     if (parts.length <= 1) return rootHandle
+    const candidates = [parts]
+    if (parts.length > 1) candidates.push(parts.slice(1))
 
-    let dir = rootHandle
-    for (let i = 0; i < parts.length - 1; i += 1) {
-      dir = await dir.getDirectoryHandle(parts[i], { create: false })
+    for (const candidateParts of candidates) {
+      try {
+        let dir = rootHandle
+        for (let i = 0; i < candidateParts.length - 1; i += 1) {
+          dir = await dir.getDirectoryHandle(candidateParts[i], { create: false })
+        }
+        return dir
+      } catch {
+        // try next candidate
+      }
     }
-    return dir
+    return rootHandle
+  }
+
+  const findFileByNameInTree = async (rootHandle, targetName) => {
+    if (!rootHandle || !targetName) return null
+    const queue = [{ dir: rootHandle, pathPrefix: '' }]
+    let visited = 0
+    const visitLimit = 50000
+
+    while (queue.length > 0 && visited < visitLimit) {
+      const { dir, pathPrefix } = queue.shift()
+      // eslint-disable-next-line no-restricted-syntax
+      for await (const [name, handle] of dir.entries()) {
+        visited += 1
+        if (visited >= visitLimit) break
+        if (handle.kind === 'directory') {
+          queue.push({ dir: handle, pathPrefix: `${pathPrefix}${name}/` })
+        } else if (handle.kind === 'file' && name === targetName) {
+          return { file: await handle.getFile(), relativePath: `${pathPrefix}${name}` }
+        }
+      }
+    }
+    return null
   }
 
   const formatDaySeparator = (timestamp) =>
@@ -782,7 +1019,7 @@ function App() {
       createdAt,
       dateKey: getDateGroupingKey(createdAt),
       device,
-      relativePath: relativePath || '',
+      relativePath: normalizeRelativePath(relativePath),
       thumbDataUrl: buildThumbnailDataUrl(image),
     }
 
@@ -969,12 +1206,58 @@ function App() {
     await processPanoramaFile(file, { persistHistory: true, loadingText: 'Wczytywanie panoramy...' })
   }
 
-  const openHistoryItem = async (item) => {
-    if (!item?.relativePath) {
-      setStatus('Brak sciezki do pliku w historii. Ponownie zaimportuj ten folder.')
-      return
-    }
+  const relinkHistoryItemFromPicker = async (item, rootHandle) => {
+    if (!canUseOpenFilePicker) return false
+    try {
+      // @ts-ignore
+      const [pickedHandle] = await window.showOpenFilePicker({
+        multiple: false,
+        startIn: rootHandle,
+        types: [
+          {
+            description: 'Obrazy',
+            accept: {
+              'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'],
+            },
+          },
+        ],
+      })
+      const file = await pickedHandle.getFile()
+      await processPanoramaFile(file, {
+        persistHistory: false,
+        forcedProjection: item.projection,
+        loadingText: 'Wczytywanie panoramy...',
+      })
 
+      let nextRelativePath = normalizeRelativePath(item.relativePath)
+      try {
+        const parts = await rootHandle.resolve(pickedHandle)
+        if (Array.isArray(parts) && parts.length > 0) {
+          nextRelativePath = normalizeRelativePath(parts.join('/'))
+        }
+      } catch {
+        // ignore resolve errors
+      }
+
+      const nextItem = {
+        ...item,
+        name: file.name || item.name,
+        relativePath: normalizeRelativePath(nextRelativePath),
+      }
+      const db = dbRef.current
+      if (db) {
+        await dbPut(db, PANORAMAS_STORE, nextItem).catch(() => {})
+      }
+      setHistoryItems((prev) => prev.map((entry) => (entry.id === item.id ? nextItem : entry)))
+      setStatus(`Podlinkowano ponownie plik: ${nextItem.name}`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const openHistoryItem = async (item) => {
+    if (!item) return
     const root = rootDirHandleRef.current
     if (!root) {
       setStatus('Brak podlaczonego folderu. Kliknij "Wybierz folder".')
@@ -988,10 +1271,49 @@ function App() {
       return
     }
 
+    const persistResolvedPath = async (resolvedPath, nameOverride = null) => {
+      const normalized = normalizeRelativePath(resolvedPath)
+      if (!normalized) return
+      const nextItem = {
+        ...item,
+        relativePath: normalized,
+        name: nameOverride || item.name,
+      }
+      const db = dbRef.current
+      if (db) {
+        await dbPut(db, PANORAMAS_STORE, nextItem).catch(() => {})
+      }
+      setHistoryItems((prev) => prev.map((entry) => (entry.id === item.id ? nextItem : entry)))
+    }
+
+    if (!item?.relativePath) {
+      const relinked = await relinkHistoryItemFromPicker(item, root)
+      if (!relinked) {
+        setStatus('Brak sciezki do pliku w historii. Wskaz plik panoramy recznie.')
+      }
+      return
+    }
+
     try {
       const file = await getFileFromRelativePath(root, item.relativePath)
       if (!file) {
-        setStatus('Nie znaleziono pliku na dysku. Sprawdz czy folder nadal zawiera te panoramy.')
+        setBusyText('Szukam pliku w podfolderach...')
+        setIsBusy(true)
+        const found = await findFileByNameInTree(root, item.name)
+        setIsBusy(false)
+        if (found?.file) {
+          await persistResolvedPath(found.relativePath, found.file.name)
+          await processPanoramaFile(found.file, {
+            persistHistory: false,
+            forcedProjection: item.projection,
+            loadingText: 'Wczytywanie panoramy...',
+          })
+          return
+        }
+        const relinked = await relinkHistoryItemFromPicker(item, root)
+        if (!relinked) {
+          setStatus('Nie znaleziono pliku na dysku. Wybierz poprawny folder z panoramami.')
+        }
         return
       }
       await processPanoramaFile(file, {
@@ -1000,7 +1322,11 @@ function App() {
         loadingText: 'Wczytywanie panoramy...',
       })
     } catch {
-      setStatus('Nie znaleziono pliku na dysku. Wybierz poprawny folder z panoramami.')
+      setIsBusy(false)
+      const relinked = await relinkHistoryItemFromPicker(item, root)
+      if (!relinked) {
+        setStatus('Nie znaleziono pliku na dysku. Wybierz poprawny folder z panoramami.')
+      }
     }
   }
 
@@ -1027,6 +1353,111 @@ function App() {
   }
 
   const exifEntries = exifData ? Object.entries(exifData) : []
+  const groupedExifEntries = useMemo(() => {
+    const groups = {
+      all: [...exifEntries],
+      basic: [],
+      camera: [],
+      capture: [],
+      gps: [],
+      panorama: [],
+      other: [],
+    }
+
+    const matches = (key, needles) => {
+      const lower = key.toLowerCase()
+      return needles.some((needle) => lower.includes(needle))
+    }
+
+    for (const entry of exifEntries) {
+      const [key] = entry
+      if (
+        matches(key, [
+          'gpano',
+          'projection',
+          'equirect',
+          'cylindr',
+          'fullpano',
+          'croppedarea',
+          'panorama',
+          'usepanoramaviewer',
+        ])
+      ) {
+        groups.panorama.push(entry)
+        continue
+      }
+      if (matches(key, ['gps', 'latitude', 'longitude', 'altitude', 'speed', 'direction', 'position'])) {
+        groups.gps.push(entry)
+        continue
+      }
+      if (
+        matches(key, [
+          'datetime',
+          'created',
+          'modify',
+          'digitalcreation',
+          'timecreated',
+          'exposure',
+          'shutter',
+          'aperture',
+          'fnumber',
+          'iso',
+          'sensitivity',
+          'brightness',
+          'metering',
+          'flash',
+          'whitebalance',
+        ])
+      ) {
+        groups.capture.push(entry)
+        continue
+      }
+      if (
+        matches(key, [
+          'make',
+          'model',
+          'camera',
+          'lens',
+          'focal',
+          'software',
+          'serial',
+          'firmware',
+          'body',
+          'manufacturer',
+        ])
+      ) {
+        groups.camera.push(entry)
+        continue
+      }
+      if (matches(key, ['image', 'width', 'height', 'orientation', 'resolution', 'color', 'profile', 'bits'])) {
+        groups.basic.push(entry)
+        continue
+      }
+      groups.other.push(entry)
+    }
+    return groups
+  }, [exifEntries])
+  const shownExifEntries = groupedExifEntries[exifTab] || groupedExifEntries.all
+  const visibleExifTabs = EXIF_TAB_ORDER.filter((tabId) => tabId === 'all' || (groupedExifEntries[tabId] || []).length > 0)
+  const gpsCoords = useMemo(() => extractGpsCoords(exifData), [exifData])
+  const hasAnyGpsData = useMemo(() => hasGpsMetadata(exifData), [exifData])
+  const mapSrc = useMemo(() => {
+    if (!gpsCoords) return ''
+    const deltaLat = 0.003
+    const deltaLon = 0.006
+    const left = gpsCoords.lon - deltaLon
+    const right = gpsCoords.lon + deltaLon
+    const top = gpsCoords.lat + deltaLat
+    const bottom = gpsCoords.lat - deltaLat
+    const bbox = `${left},${bottom},${right},${top}`
+    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${gpsCoords.lat}%2C${gpsCoords.lon}`
+  }, [gpsCoords])
+
+  useEffect(() => {
+    if (!visibleExifTabs.includes(exifTab)) {
+      setExifTab('all')
+    }
+  }, [exifTab, visibleExifTabs])
   const groupedHistory = useMemo(() => {
     const filtered = historyItems.filter((item) => {
       const projectionOk = panelProjectionFilter === 'all' || item.projection === panelProjectionFilter
@@ -1075,6 +1506,95 @@ function App() {
     },
     [historyItems, homeProjectionFilter, homeDeviceFilter, homeSortOrder],
   )
+  const activeHomeIndex = useMemo(
+    () => filteredHomeItems.findIndex((item) => item.id === activeHistoryId),
+    [filteredHomeItems, activeHistoryId],
+  )
+  const previousHomeItem = activeHomeIndex > 0 ? filteredHomeItems[activeHomeIndex - 1] : null
+  const nextHomeItem =
+    activeHomeIndex >= 0 && activeHomeIndex < filteredHomeItems.length - 1 ? filteredHomeItems[activeHomeIndex + 1] : null
+
+  const estimatedDbBytes = useMemo(() => {
+    try {
+      return new Blob([JSON.stringify(historyItems)]).size
+    } catch {
+      return 0
+    }
+  }, [historyItems])
+
+  useEffect(() => {
+    let cancelled = false
+    const estimateStorage = async () => {
+      if (!navigator?.storage?.estimate) return
+      try {
+        const estimate = await navigator.storage.estimate()
+        const usageDetails = estimate?.usageDetails || {}
+        const rawIndexedDb = usageDetails.indexedDB
+        const next = Number.isFinite(rawIndexedDb) ? rawIndexedDb : null
+        if (!cancelled) setIndexedDbBytes(next)
+      } catch {
+        if (!cancelled) setIndexedDbBytes(null)
+      }
+    }
+    estimateStorage()
+    return () => {
+      cancelled = true
+    }
+  }, [historyItems])
+
+  const displayedDbBytes = indexedDbBytes ?? estimatedDbBytes
+
+  const buildBackupPayload = () => ({
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    app: 'Panorama 360 Viewer',
+    panoramas: historyItems,
+  })
+
+  const exportBackup = () => {
+    const payload = buildBackupPayload()
+    const json = JSON.stringify(payload, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    a.href = url
+    a.download = `panorama360-backup-${stamp}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    setStatus(`Wyeksportowano backup (${historyItems.length} panoram).`)
+  }
+
+  const parseBackupFile = async (file) => {
+    if (!file) return null
+    const text = await file.text()
+    const raw = JSON.parse(text)
+    const items = Array.isArray(raw?.panoramas) ? raw.panoramas : Array.isArray(raw?.items) ? raw.items : null
+    if (!items) throw new Error('Nieprawidlowy format backupu.')
+    return items
+  }
+
+  const normalizeImportedItem = (item) => {
+    if (!item || typeof item !== 'object') return null
+    const width = Number(item.width) || 0
+    const height = Number(item.height) || 0
+    if (!item.fingerprint || !item.name || !width || !height) return null
+    const createdAt = Number(item.createdAt) || Date.now()
+    const projection = item.projection === 'cylindrical' ? 'cylindrical' : 'spherical'
+    return {
+      id: item.id || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      name: String(item.name),
+      width,
+      height,
+      projection,
+      fingerprint: String(item.fingerprint),
+      createdAt,
+      dateKey: item.dateKey || getDateGroupingKey(createdAt),
+      device: item.device ? String(item.device) : 'Nieznane urzadzenie',
+      relativePath: normalizeRelativePath(item.relativePath ? String(item.relativePath) : ''),
+      thumbDataUrl: item.thumbDataUrl ? String(item.thumbDataUrl) : '',
+    }
+  }
 
   const formatShortDateTime = (timestamp) => {
     if (!timestamp) return '-'
@@ -1131,6 +1651,36 @@ function App() {
   const closeContextMenu = () => {
     setContextMenu((prev) => ({ ...prev, open: false }))
   }
+
+  const rememberHomeScrollPosition = () => {
+    if (homeOverlayRef.current) {
+      homeScrollTopRef.current = homeOverlayRef.current.scrollTop || 0
+    }
+  }
+
+  const closePanoramaToHome = () => {
+    if (!hasActivePanorama) return
+    shouldRestoreHomeScrollRef.current = true
+    setHasActivePanorama(false)
+  }
+
+  const openPanoramaFromLibrary = async (item) => {
+    if (!item) return
+    if (!hasActivePanorama) rememberHomeScrollPosition()
+    setActiveHistoryId(item.id || null)
+    await openHistoryItem(item)
+  }
+
+  useEffect(() => {
+    if (hasActivePanorama || !shouldRestoreHomeScrollRef.current) return
+    const restore = () => {
+      if (homeOverlayRef.current) {
+        homeOverlayRef.current.scrollTop = homeScrollTopRef.current
+      }
+      shouldRestoreHomeScrollRef.current = false
+    }
+    requestAnimationFrame(restore)
+  }, [hasActivePanorama])
 
   useEffect(() => {
     if (!contextMenu.open) return
@@ -1196,7 +1746,9 @@ function App() {
 
   const onDrop = async (event) => {
     preventDefaults(event)
+    dragDepthRef.current = 0
     setIsDragging(false)
+    if (!isFileDragEvent(event)) return
     const [file] = event.dataTransfer.files
     await handleFile(file)
   }
@@ -1269,9 +1821,14 @@ function App() {
     return { added, duplicates, tooLarge, checked }
   }
 
-  const pickFolderWithFsApi = async () => {
+  const pickFolderWithFsApi = async (options = {}) => {
+    const { scanAfterPick = true } = options
     if (!canUseFsApi) {
-      folderInputRef.current?.click()
+      if (scanAfterPick) {
+        folderInputRef.current?.click()
+      } else {
+        setStatus('Przegladarka nie obsluguje podlaczenia folderu bez skanowania.')
+      }
       return
     }
 
@@ -1288,6 +1845,11 @@ function App() {
       rootDirHandleRef.current = dirHandle
       if (dbRef.current) {
         await dbPut(dbRef.current, SETTINGS_STORE, { key: ROOT_HANDLE_KEY, value: dirHandle })
+      }
+
+      if (!scanAfterPick) {
+        setStatus('Podlaczono folder. Biblioteka zostala zaladowana z backupu bez skanowania.')
+        return
       }
 
       setBusyText('Skanowanie folderu panoram...')
@@ -1307,12 +1869,76 @@ function App() {
   const refreshFolderAccess = async () => {
     const root = rootDirHandleRef.current
     if (!root) {
-      await pickFolderWithFsApi()
+      await pickFolderWithFsApi({ scanAfterPick: false })
       return
     }
     const granted = await ensureReadPermission(root)
     setHasFolderAccess(granted)
     setStatus(granted ? 'Dostep do folderu odswiezony.' : 'Nie udalo sie odswiezyc dostepu do folderu.')
+  }
+
+  const importBackup = async () => {
+    if (!backupFile) {
+      setStatus('Wybierz plik backupu .json.')
+      return
+    }
+    const db = dbRef.current
+    if (!db) {
+      setStatus('Baza danych nie jest gotowa.')
+      return
+    }
+
+    try {
+      setBusyText('Import backupu...')
+      setIsBusy(true)
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+
+      const importedRaw = await parseBackupFile(backupFile)
+      const normalized = importedRaw.map(normalizeImportedItem).filter(Boolean)
+
+      if (importClearBefore) {
+        await dbClear(db, PANORAMAS_STORE)
+      }
+
+      const existing = importClearBefore ? [] : await dbGetAll(db, PANORAMAS_STORE).catch(() => [])
+      const knownFingerprints = new Set(existing.map((item) => item?.fingerprint).filter(Boolean))
+
+      let added = 0
+      let skipped = 0
+      for (const item of normalized) {
+        if (knownFingerprints.has(item.fingerprint)) {
+          skipped += 1
+          continue
+        }
+        knownFingerprints.add(item.fingerprint)
+        await dbPut(db, PANORAMAS_STORE, item)
+        added += 1
+      }
+
+      await reloadHistoryFromDb()
+      setIsBackupModalOpen(false)
+      setBackupFile(null)
+      setStatus(`Import backupu zakonczony. Dodano: ${added}, pominieto duplikaty: ${skipped}.`)
+
+      if (importLinkFolderAfter) {
+        await pickFolderWithFsApi({ scanAfterPick: importScanAfterLink })
+      }
+    } catch {
+      setStatus('Nie udalo sie zaimportowac backupu. Sprawdz format pliku JSON.')
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  const installApp = async () => {
+    if (!installPromptEvent) return
+    try {
+      await installPromptEvent.prompt()
+      await installPromptEvent.userChoice
+      setInstallPromptEvent(null)
+    } catch {
+      setStatus('Nie udalo sie wyswietlic promptu instalacji.')
+    }
   }
 
   const revealHistoryItemOnDisk = async (item) => {
@@ -1391,31 +2017,59 @@ function App() {
       setPanelSortOrder(value)
     }
   }
+  const openBackupModal = () => {
+    setIsBackupModalOpen(true)
+    setBackupFile(null)
+  }
+  const onBackupFileInput = (event) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      setBackupFile(file)
+    }
+    event.target.value = ''
+  }
+  const onBackupDrop = (event) => {
+    event.preventDefault()
+    const file = event.dataTransfer?.files?.[0]
+    if (file) {
+      setBackupFile(file)
+    }
+  }
+  const canInstallApp = Boolean(installPromptEvent) && !isInstalled
 
   return (
     <div
       className={`app ${isDragging ? 'dragging' : ''}`}
       onContextMenu={(event) => openContextMenu(event, null, 'home')}
       onDragEnter={(event) => {
+        if (!isFileDragEvent(event)) return
         preventDefaults(event)
+        dragDepthRef.current += 1
         setIsDragging(true)
       }}
-      onDragOver={preventDefaults}
-      onDragLeave={(event) => {
+      onDragOver={(event) => {
+        if (!isFileDragEvent(event)) return
         preventDefaults(event)
-        if (event.currentTarget === event.target) {
+      }}
+      onDragLeave={(event) => {
+        if (!isFileDragEvent(event)) return
+        preventDefaults(event)
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+        if (dragDepthRef.current === 0) {
           setIsDragging(false)
         }
       }}
       onDrop={onDrop}
     >
       <div className="toolbar">
-        <button type="button" className="brand-button" onClick={() => setHasActivePanorama(false)}>
+        <button type="button" className="brand-button" onClick={closePanoramaToHome}>
           Panorama 360 Viewer
         </button>
-        <button type="button" onClick={() => inputRef.current?.click()}>
-          Wybierz obraz
-        </button>
+        {canInstallApp && (
+          <button type="button" className="install-btn" onClick={installApp}>
+            Zainstaluj
+          </button>
+        )}
         <label>
           Projekcja:
           <select value={projectionMode} onChange={(event) => setProjectionMode(event.target.value)}>
@@ -1458,9 +2112,6 @@ function App() {
             onChange={(event) => setShowTelemetry(event.target.checked)}
           />
         </label>
-        <button type="button" onClick={() => setIsExifOpen(true)} disabled={!loadedMetaRef.current || isExifLoading}>
-          Pokaz EXIF
-        </button>
         <input
           ref={inputRef}
           type="file"
@@ -1468,12 +2119,85 @@ function App() {
           className="hidden-input"
           onChange={onInputChange}
         />
+        <input
+          ref={backupInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden-input"
+          onChange={onBackupFileInput}
+        />
       </div>
-      <p className="status">{status}</p>
+      <p className="status">
+        <span className="status-main">{status}</span>
+        <span className="status-side" aria-label="Statystyki biblioteki">
+          Panoramy: <strong>{historyItems.length}</strong> | Rozmiar bazy: <strong>{formatBytes(displayedDbBytes)}</strong>
+        </span>
+      </p>
       <div className="viewer-wrap">
         <div ref={containerRef} className="viewer" />
+        {hasActivePanorama && gpsCoords && (
+          <div className="map-overlay" aria-label="Lokalizacja GPS panoramy">
+            <div className="map-overlay-head">
+              <span>GPS</span>
+              <a
+                href={`https://www.openstreetmap.org/?mlat=${gpsCoords.lat}&mlon=${gpsCoords.lon}#map=16/${gpsCoords.lat}/${gpsCoords.lon}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Otworz
+              </a>
+            </div>
+            <iframe title="Mapa lokalizacji" src={mapSrc} loading="lazy" />
+            <p>
+              {gpsCoords.lat.toFixed(6)}, {gpsCoords.lon.toFixed(6)}
+            </p>
+          </div>
+        )}
+        {hasActivePanorama && !gpsCoords && (
+          <div className="map-overlay map-overlay-empty" aria-live="polite">
+            {hasAnyGpsData ? 'Brak poprawnych danych GPS w EXIF.' : 'Brak danych GPS w EXIF.'}
+          </div>
+        )}
+        {hasActivePanorama && (
+          <>
+            <button
+              type="button"
+              className="viewer-close-btn"
+              aria-label="Zamknij panorame"
+              onClick={closePanoramaToHome}
+            >
+              ×
+            </button>
+            {previousHomeItem && (
+              <button
+                type="button"
+                className="viewer-nav viewer-nav-left"
+                aria-label="Poprzednia panorama"
+                title="Poprzednia panorama"
+                onClick={() => openPanoramaFromLibrary(previousHomeItem)}
+              >
+                <span>‹</span>
+              </button>
+            )}
+            {nextHomeItem && (
+              <button
+                type="button"
+                className="viewer-nav viewer-nav-right"
+                aria-label="Nastepna panorama"
+                title="Nastepna panorama"
+                onClick={() => openPanoramaFromLibrary(nextHomeItem)}
+              >
+                <span>›</span>
+              </button>
+            )}
+          </>
+        )}
         {!hasActivePanorama && (
-          <div className="home-grid-overlay" onContextMenu={(event) => openContextMenu(event, null, 'home')}>
+          <div
+            ref={homeOverlayRef}
+            className="home-grid-overlay"
+            onContextMenu={(event) => openContextMenu(event, null, 'home')}
+          >
             {filteredHomeItems.length === 0 ? (
               <div className="home-empty">
                 <h2>Brak panoram dla aktywnego filtra</h2>
@@ -1486,12 +2210,13 @@ function App() {
                     key={`home-${item.id}`}
                     type="button"
                     className={`home-tile home-tile-${homeTileSize}`}
-                    onClick={() => openHistoryItem(item)}
+                    onClick={() => openPanoramaFromLibrary(item)}
                     onContextMenu={(event) => openContextMenu(event, item.id, 'home')}
+                    onDragStart={(event) => event.preventDefault()}
                     title={`${item.name} (${item.width}x${item.height})`}
                   >
                     {item.thumbDataUrl ? (
-                      <img src={item.thumbDataUrl} alt={item.name} className="home-tile-thumb" />
+                      <img src={item.thumbDataUrl} alt={item.name} className="home-tile-thumb" draggable={false} />
                     ) : (
                       <div className="home-tile-thumb home-tile-thumb-placeholder" />
                     )}
@@ -1547,7 +2272,7 @@ function App() {
                         key={item.id}
                         type="button"
                         className="history-item"
-                        onClick={() => openHistoryItem(item)}
+                        onClick={() => openPanoramaFromLibrary(item)}
                         onContextMenu={(event) => openContextMenu(event, item.id)}
                         title={`${item.name} (${item.width}x${item.height})`}
                       >
@@ -1778,6 +2503,29 @@ function App() {
               <button
                 type="button"
                 className="context-menu-item"
+                onClick={() => {
+                  inputRef.current?.click()
+                  closeContextMenu()
+                }}
+              >
+                <span className="cm-icon cm-image" />
+                <span>Wybierz obraz</span>
+              </button>
+              <button
+                type="button"
+                className="context-menu-item"
+                disabled={!loadedMetaRef.current || isExifLoading}
+                onClick={() => {
+                  setIsExifOpen(true)
+                  closeContextMenu()
+                }}
+              >
+                <span className="cm-icon cm-exif" />
+                <span>Pokaz EXIF</span>
+              </button>
+              <button
+                type="button"
+                className="context-menu-item"
                 disabled={!selectedContextItem}
                 onClick={() => {
                   if (!selectedContextItem) return
@@ -1787,6 +2535,17 @@ function App() {
               >
                 <span className="cm-icon cm-folder" />
                 <span>Pokaz na dysku</span>
+              </button>
+              <button
+                type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  openBackupModal()
+                  closeContextMenu()
+                }}
+              >
+                <span className="cm-icon cm-backup" />
+                <span>Backup import/eksport</span>
               </button>
               <div className="context-sep" />
               <button
@@ -1888,29 +2647,112 @@ function App() {
               <p>Brak metadanych EXIF/XMP/IPTC w tym pliku.</p>
             )}
             {!isExifLoading && !exifError && exifEntries.length > 0 && (
-              <div className="exif-table-wrap">
-                <table className="exif-table">
-                  <colgroup>
-                    <col className="exif-col-key" />
-                    <col className="exif-col-value" />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th>Pole</th>
-                      <th>Wartosc</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {exifEntries.map(([key, value]) => (
-                      <tr key={key}>
-                        <td>{key}</td>
-                        <td>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</td>
+              <>
+                <div className="exif-tabs">
+                  {visibleExifTabs.map((tabId) => (
+                    <button
+                      key={tabId}
+                      type="button"
+                      className={`exif-tab ${exifTab === tabId ? 'active' : ''}`}
+                      onClick={() => setExifTab(tabId)}
+                    >
+                      {EXIF_TAB_LABELS[tabId]} ({(groupedExifEntries[tabId] || []).length})
+                    </button>
+                  ))}
+                </div>
+                <div className="exif-table-wrap">
+                  <table className="exif-table">
+                    <colgroup>
+                      <col className="exif-col-key" />
+                      <col className="exif-col-value" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>Pole</th>
+                        <th>Wartosc</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {shownExifEntries.map(([key, value]) => (
+                        <tr key={key}>
+                          <td>{key}</td>
+                          <td>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
+          </div>
+        </div>
+      )}
+
+      {isBackupModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsBackupModalOpen(false)}>
+          <div className="modal backup-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Backup biblioteki</h2>
+              <button type="button" onClick={() => setIsBackupModalOpen(false)}>
+                Zamknij
+              </button>
+            </div>
+            <div className="backup-section">
+              <h3>Eksport</h3>
+              <p>Wyeksportuj miniatury i metadane do pliku JSON.</p>
+              <button type="button" onClick={exportBackup}>
+                Eksportuj backup
+              </button>
+            </div>
+            <div className="backup-section">
+              <h3>Import</h3>
+              <p>Przeciagnij plik JSON tutaj albo wybierz z dysku.</p>
+              <div
+                className="backup-dropzone"
+                onDragOver={(event) => {
+                  event.preventDefault()
+                }}
+                onDrop={onBackupDrop}
+              >
+                {backupFile ? `Wybrano: ${backupFile.name}` : 'Upusc plik backupu (.json)'}
+              </div>
+              <button type="button" className="secondary-btn" onClick={() => backupInputRef.current?.click()}>
+                Wybierz plik backupu
+              </button>
+              <label className="backup-option">
+                <input
+                  type="checkbox"
+                  checked={importClearBefore}
+                  onChange={(event) => setImportClearBefore(event.target.checked)}
+                />
+                Wyczysc obecna biblioteke przed importem
+              </label>
+              <label className="backup-option">
+                <input
+                  type="checkbox"
+                  checked={importLinkFolderAfter}
+                  onChange={(event) => setImportLinkFolderAfter(event.target.checked)}
+                />
+                Po imporcie podlacz folder z plikami
+              </label>
+              <label className="backup-option">
+                <input
+                  type="checkbox"
+                  checked={importScanAfterLink}
+                  disabled={!importLinkFolderAfter}
+                  onChange={(event) => setImportScanAfterLink(event.target.checked)}
+                />
+                Po podlaczeniu od razu przeskanuj folder
+              </label>
+              <div className="backup-actions">
+                <button type="button" className="secondary-btn" onClick={() => setIsBackupModalOpen(false)}>
+                  Anuluj
+                </button>
+                <button type="button" onClick={importBackup}>
+                  Importuj backup
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
