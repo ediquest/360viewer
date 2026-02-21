@@ -559,6 +559,7 @@ function App() {
     x: 0,
     y: 0,
     itemId: null,
+    folderTarget: null,
     submenuSide: 'right',
     scope: 'panel',
   })
@@ -3178,6 +3179,12 @@ function App() {
   }
 
   const openContextMenu = (event, itemId = null, scope = 'panel') => {
+    let nextScope = scope
+    let folderTarget = null
+    if (nextScope && typeof nextScope === 'object') {
+      folderTarget = nextScope.folderTarget || null
+      nextScope = nextScope.scope || 'panel'
+    }
     event.preventDefault()
     event.stopPropagation()
     const submenuSide = event.clientX > window.innerWidth - 420 ? 'left' : 'right'
@@ -3186,8 +3193,9 @@ function App() {
       x: event.clientX,
       y: event.clientY,
       itemId,
+      folderTarget,
       submenuSide,
-      scope,
+      scope: nextScope,
     })
   }
 
@@ -3589,9 +3597,90 @@ function App() {
     }
   }
 
+  const getDirectoryHandleFromFolderPath = async (rootHandle, folderPath) => {
+    if (!rootHandle) return null
+    const normalized = normalizeRelativePath(folderPath)
+    if (!normalized) return rootHandle
+    const parts = splitRelativePath(normalized)
+    if (parts.length === 0) return rootHandle
+    try {
+      let dir = rootHandle
+      for (const part of parts) {
+        // eslint-disable-next-line no-await-in-loop
+        dir = await dir.getDirectoryHandle(part, { create: false })
+      }
+      return dir
+    } catch {
+      return null
+    }
+  }
+
+  const rescanFolderFromContext = async () => {
+    if (isScanInProgress) {
+      setStatus('Another scan is already in progress.')
+      return
+    }
+    const target = contextMenu.folderTarget
+    const targetRootName = String(target?.rootName || '').trim()
+    const targetFolderPath = normalizeRelativePath(target?.folderPath || '')
+    if (!targetRootName || targetRootName === '(unknown root)') {
+      setStatus('Cannot rescan this folder. Root folder is unknown.')
+      return
+    }
+
+    const accessibleRoots = await getAccessibleRootHandles(true)
+    if (accessibleRoots.length === 0) {
+      setHasFolderAccess(false)
+      setStatus('No folder permission. Use "Refresh access".')
+      return
+    }
+    setHasFolderAccess(true)
+    const matchingRoots = accessibleRoots.filter((handle) => String(handle?.name || '').trim() === targetRootName)
+    if (matchingRoots.length === 0) {
+      setStatus(`Connected root "${targetRootName}" is not accessible.`)
+      return
+    }
+
+    let totals = { added: 0, duplicates: 0, tooLarge: 0, checked: 0 }
+    let scannedRoots = 0
+    for (const rootHandle of matchingRoots) {
+      // eslint-disable-next-line no-await-in-loop
+      const scanDir = await getDirectoryHandleFromFolderPath(rootHandle, targetFolderPath)
+      if (!scanDir) continue
+      const pathPrefix = targetFolderPath ? `${targetFolderPath}/` : ''
+      // eslint-disable-next-line no-await-in-loop
+      const fileItems = await collectFilesFromDirectoryHandle(scanDir, pathPrefix, targetRootName)
+      if (fileItems.length === 0) continue
+      // eslint-disable-next-line no-await-in-loop
+      const { added, duplicates, tooLarge, checked, canceled } = await scanFilesWithWorker(fileItems, 'Rescanning folder')
+      totals = {
+        added: totals.added + added,
+        duplicates: totals.duplicates + duplicates,
+        tooLarge: totals.tooLarge + tooLarge,
+        checked: totals.checked + checked,
+      }
+      scannedRoots += 1
+      if (canceled) return
+    }
+
+    if (scannedRoots === 0) {
+      setStatus('Rescan skipped. Selected folder was not found in connected roots.')
+      return
+    }
+    const label = targetFolderPath ? `${targetRootName}/${targetFolderPath}` : targetRootName
+    setStatus(
+      `Rescan complete for ${label}. Added ${totals.added}, duplicates: ${totals.duplicates}, skipped >100MB: ${totals.tooLarge}, checked files: ${totals.checked}.`,
+    )
+  }
+
   const selectedContextItem = contextMenu.itemId
     ? historyItems.find((item) => item.id === contextMenu.itemId) || null
     : null
+  const selectedContextFolder = contextMenu.scope === 'panel' ? contextMenu.folderTarget : null
+  const selectedContextFolderPath = normalizeRelativePath(selectedContextFolder?.folderPath || '')
+  const selectedContextFolderLabel = selectedContextFolderPath
+    ? `${selectedContextFolder?.rootName || ''}/${selectedContextFolderPath}`
+    : selectedContextFolder?.rootName || ''
   const connectedRootCount = getConnectedRootHandles().length
   const activeContextItem = useMemo(() => {
     if (selectedContextItem) return selectedContextItem
@@ -3733,6 +3822,15 @@ function App() {
             className={`panel-folder-row ${hasChildren ? 'is-expandable' : 'is-leaf'} ${isSelected ? 'is-selected' : ''}`}
             style={{ paddingLeft: `${10 + depth * 14}px` }}
             title={node.fullPath}
+            onContextMenu={(event) =>
+              openContextMenu(event, null, {
+                scope: 'panel',
+                folderTarget: {
+                  rootName,
+                  folderPath,
+                },
+              })
+            }
             onClick={() => {
               selectFolderForHome(node)
             }}
@@ -4324,6 +4422,18 @@ function App() {
           )}
           {contextMenu.scope === 'panel' && panelContentMode === 'folders' && (
             <>
+              <button
+                type="button"
+                className="context-menu-item"
+                disabled={!selectedContextFolder || selectedContextFolder.rootName === '(unknown root)' || isScanInProgress}
+                onClick={() => {
+                  rescanFolderFromContext()
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-folder" />
+                <span>{selectedContextFolderLabel ? `Rescan folder: ${selectedContextFolderLabel}` : 'Rescan folder'}</span>
+              </button>
               <button
                 type="button"
                 className="context-menu-item"
