@@ -14,6 +14,7 @@ const MAX_LIBRARY_FILE_SIZE_BYTES = 100 * 1024 * 1024
 const THUMBNAIL_WIDTH = 512
 const THUMBNAIL_HEIGHT = 256
 const MIN_PANORAMA_RATIO = 1.95
+const PANORAMA_RATIO_TOLERANCE = 0.04
 
 const QUALITY_MODES = {
   auto: Number.POSITIVE_INFINITY,
@@ -1007,7 +1008,7 @@ function App() {
     if (projectionTag.includes('cylindrical')) return 'cylindrical'
 
     const ratio = width / height
-    return Math.abs(ratio - 2) <= 0.04 ? 'spherical' : 'cylindrical'
+    return Math.abs(ratio - 2) <= PANORAMA_RATIO_TOLERANCE ? 'spherical' : 'cylindrical'
   }
 
   const switchProjectionMesh = (projection) => {
@@ -1681,11 +1682,17 @@ function App() {
     return ratio >= MIN_PANORAMA_RATIO
   }
 
+  const isNearSphericalRatio = (width, height) => {
+    if (!width || !height) return false
+    const ratio = width / height
+    return Math.abs(ratio - 2) <= PANORAMA_RATIO_TOLERANCE
+  }
+
   const hasPanoramaMetadata = (metadata) => {
     if (!metadata || typeof metadata !== 'object') return false
     const projectionTagRaw = metadata?.ProjectionType || metadata?.projectionType || metadata?.GPanoProjectionType
     const projectionTag = String(projectionTagRaw || '').toLowerCase()
-    if (projectionTag.includes('equirectangular') || projectionTag.includes('cylindrical') || projectionTag.includes('spherical')) {
+    if (projectionTag.includes('equirectangular') || projectionTag.includes('spherical')) {
       return true
     }
 
@@ -1708,8 +1715,9 @@ function App() {
   }
 
   const isPanoramaCandidateWithMetadata = (width, height, metadata) => {
-    if (isPanoramaCandidate(width, height)) return true
-    return hasPanoramaMetadata(metadata)
+    if (hasPanoramaMetadata(metadata)) return true
+    if (projectionMode === 'cylindrical') return isPanoramaCandidate(width, height)
+    return isNearSphericalRatio(width, height)
   }
 
   const ingestFileToHistory = async (file, options = {}) => {
@@ -1818,7 +1826,9 @@ function App() {
           ratio: Number((width / height).toFixed(4)),
           hasPanoramaMetadata: hasPanoramaMetadata(parsed),
         })
-        setStatus(`This does not look like a panorama: ${width}x${height} (min ratio ~${MIN_PANORAMA_RATIO}:1 or GPano metadata).`)
+        setStatus(
+          `This does not look like a panorama: ${width}x${height} (expected near 2:1 in auto mode, or GPano metadata).`,
+        )
         setIsBusy(false)
         return false
       }

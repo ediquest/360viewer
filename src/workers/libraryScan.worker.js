@@ -2,6 +2,7 @@ import * as exifr from 'exifr'
 
 const THUMBNAIL_WIDTH = 512
 const THUMBNAIL_HEIGHT = 256
+const SPHERICAL_RATIO_TOLERANCE = 0.04
 
 const hashBufferSha256 = async (buffer) => {
   const digest = await crypto.subtle.digest('SHA-256', buffer)
@@ -103,7 +104,7 @@ const hasPanoramaMetadata = (metadata) => {
   if (!metadata || typeof metadata !== 'object') return false
   const projectionTagRaw = metadata?.ProjectionType || metadata?.projectionType || metadata?.GPanoProjectionType
   const projectionTag = String(projectionTagRaw || '').toLowerCase()
-  if (projectionTag.includes('equirectangular') || projectionTag.includes('cylindrical') || projectionTag.includes('spherical')) {
+  if (projectionTag.includes('equirectangular') || projectionTag.includes('spherical')) {
     return true
   }
 
@@ -123,6 +124,21 @@ const hasPanoramaMetadata = (metadata) => {
     'CroppedAreaImageHeightPixels',
   ]
   return gpanoKeys.some((key) => metadata[key] != null)
+}
+
+const isNearSphericalRatio = (width, height) => {
+  if (!width || !height) return false
+  const ratio = width / height
+  return Math.abs(ratio - 2) <= SPHERICAL_RATIO_TOLERANCE
+}
+
+const isPanoramaCandidate = (width, height, metadata, options) => {
+  if (hasPanoramaMetadata(metadata)) return true
+  if ((options?.projectionMode || 'auto') === 'cylindrical') {
+    const ratio = height > 0 ? width / height : 0
+    return ratio >= (options?.minPanoramaRatio || 1.95)
+  }
+  return isNearSphericalRatio(width, height)
 }
 
 const buildProjection = (width, height, metadata, projectionMode) => {
@@ -195,8 +211,7 @@ const processFile = async (file, relativePath, rootName, options) => {
   const height = bitmap.height
   bitmap.close()
 
-  const ratio = height > 0 ? width / height : 0
-  const panoramaCandidate = ratio >= options.minPanoramaRatio || hasPanoramaMetadata(metadata)
+  const panoramaCandidate = isPanoramaCandidate(width, height, metadata, options)
   if (!panoramaCandidate) return { kind: 'skip' }
 
   const fingerprint = `${file.size}-${file.lastModified}-${await hashBufferSha256(buffer)}`
