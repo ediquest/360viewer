@@ -8,6 +8,8 @@ const DB_VERSION = 2
 const PANORAMAS_STORE = 'panoramas'
 const SETTINGS_STORE = 'settings'
 const ROOT_HANDLE_KEY = 'fs-root-handle'
+const ROOT_HANDLES_KEY = 'fs-root-handles'
+const DEBUG_BUILD_TAG = 'open-fix-2026-02-21-b'
 const MAX_LIBRARY_FILE_SIZE_BYTES = 100 * 1024 * 1024
 const THUMBNAIL_WIDTH = 512
 const THUMBNAIL_HEIGHT = 256
@@ -62,16 +64,25 @@ const I18N = {
       removeFromLibrary: 'Remove from library',
       removeSelectedFromLibrary: 'Remove selected from library',
       deselectAll: 'Deselect all',
+      repairLibraryLinks: 'Repair library links',
       clearLibrary: 'Clear library',
       hideLocationPanel: 'Hide location panel',
       showLocationPanel: 'Show location panel',
       hideGpsMap: 'Hide GPS mini-map',
       showGpsMap: 'Show GPS mini-map',
+      cancelScan: 'Cancel scan',
+      scanCanceled: 'Scan canceled by user.',
       locationResolving: 'Resolving location...',
       unknownProjection: 'Unknown',
       telemetryProjection: 'Proj',
       countPanoramas: 'Panoramas',
       dbSize: 'DB size',
+      connectedFolders: 'Folders',
+      showPanoramas: 'Show panoramas',
+      showFolders: 'Show folders',
+      collapseAllFolders: 'Collapse all folders',
+      expandAllFolders: 'Expand all folders',
+      clearFolderFilter: 'Clear folder filter',
     },
   },
   pl: {
@@ -114,16 +125,25 @@ const I18N = {
       removeFromLibrary: 'Usun z biblioteki',
       removeSelectedFromLibrary: 'Usun zaznaczone z biblioteki',
       deselectAll: 'Odznacz wszystkie',
+      repairLibraryLinks: 'Napraw linki biblioteki',
       clearLibrary: 'Wyczysc biblioteke',
       hideLocationPanel: 'Ukryj panel lokalizacji',
       showLocationPanel: 'Pokaz panel lokalizacji',
       hideGpsMap: 'Ukryj mapke GPS',
       showGpsMap: 'Pokaz mapke GPS',
+      cancelScan: 'Anuluj skanowanie',
+      scanCanceled: 'Skanowanie anulowane przez uzytkownika.',
       locationResolving: 'Ustalanie miejscowosci...',
       unknownProjection: 'Nieznany',
       telemetryProjection: 'Proj',
       countPanoramas: 'Panoramy',
       dbSize: 'Rozmiar bazy',
+      connectedFolders: 'Foldery',
+      showPanoramas: 'Pokaz panoramy',
+      showFolders: 'Pokaz foldery',
+      collapseAllFolders: 'Zwin wszystkie foldery',
+      expandAllFolders: 'Rozwin wszystkie foldery',
+      clearFolderFilter: 'Wyczysc filtr folderu',
     },
   },
 }
@@ -149,6 +169,7 @@ const CYLINDRICAL_DEFAULT_FOV = 54
 const CYLINDRICAL_MIN_FOV = 45
 const CYLINDRICAL_MAX_FOV = 140
 const EXIF_TAB_ORDER = ['basic', 'camera', 'capture', 'gps', 'panorama', 'other', 'all']
+const LOCALITY_FAILURE_RETRY_MS = 2 * 60 * 1000
 
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes) || bytes < 0) return '-'
@@ -241,6 +262,20 @@ const normalizeGpsCoordinate = (value, ref) => {
   if (hemisphere === 'S' || hemisphere === 'W') return -Math.abs(numeric)
   if (hemisphere === 'N' || hemisphere === 'E') return Math.abs(numeric)
   return numeric
+}
+
+const pickLocalityFromAddress = (address) => {
+  if (!address || typeof address !== 'object') return ''
+  return (
+    address.city ||
+    address.town ||
+    address.village ||
+    address.municipality ||
+    address.suburb ||
+    address.county ||
+    address.state ||
+    ''
+  )
 }
 
 const extractGpsCoords = (metadata) => {
@@ -436,8 +471,14 @@ function App() {
   const lockVerticalRef = useRef(true)
   const dbRef = useRef(null)
   const rootDirHandleRef = useRef(null)
+  const rootDirHandlesRef = useRef([])
   const contextMenuRef = useRef(null)
   const localityCacheRef = useRef(new Map())
+  const scanWorkerRef = useRef(null)
+  const scanProgressRef = useRef({ added: 0, duplicates: 0, tooLarge: 0, checked: 0 })
+  const scanPromiseResolveRef = useRef(null)
+  const scanCancelledRef = useRef(false)
+  const unknownRootFastRepairRef = useRef(new Map())
   const dragDepthRef = useRef(0)
   const backupDragDepthRef = useRef(0)
   const homeScrollTopRef = useRef(0)
@@ -468,6 +509,7 @@ function App() {
   const [exifTab, setExifTab] = useState('all')
   const [isBusy, setIsBusy] = useState(false)
   const [busyText, setBusyText] = useState('Loading...')
+  const [isScanInProgress, setIsScanInProgress] = useState(false)
   const [showTelemetry, setShowTelemetry] = useState(true)
   const [showLocationPanel, setShowLocationPanel] = useState(true)
   const [showGpsMapOverlay, setShowGpsMapOverlay] = useState(true)
@@ -484,6 +526,9 @@ function App() {
   const [panelProjectionFilter, setPanelProjectionFilter] = useState('all')
   const [panelDeviceFilter, setPanelDeviceFilter] = useState('all')
   const [panelSortOrder, setPanelSortOrder] = useState('desc')
+  const [panelContentMode, setPanelContentMode] = useState('panoramas')
+  const [collapsedFolderNodes, setCollapsedFolderNodes] = useState({})
+  const [homeFolderFilter, setHomeFolderFilter] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [isDeleteSelectedConfirmOpen, setIsDeleteSelectedConfirmOpen] = useState(false)
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
@@ -526,6 +571,13 @@ function App() {
     const template = getI18nValue(dict, key) ?? getI18nValue(I18N.en, key) ?? key
     return interpolate(template, vars)
   }
+  const debugOpenHistory = (...args) => {
+    try {
+      console.log('[open-history]', ...args)
+    } catch {
+      // ignore logging failures
+    }
+  }
   const projectionOptions = useMemo(
     () => [
       { value: 'auto', label: projectionLabels.auto },
@@ -546,9 +598,35 @@ function App() {
   )
 
   useEffect(() => {
+    // Diagnostic marker to verify the newest bundle is loaded (helps with PWA cache issues).
+    console.log('[open-history] build', DEBUG_BUILD_TAG)
     if (!folderInputRef.current) return
     folderInputRef.current.setAttribute('webkitdirectory', '')
     folderInputRef.current.setAttribute('directory', '')
+  }, [])
+
+  const createScanWorker = () => new Worker(new URL('./workers/libraryScan.worker.js', import.meta.url), { type: 'module' })
+
+  const restartScanWorker = () => {
+    if (scanWorkerRef.current) {
+      scanWorkerRef.current.terminate()
+      scanWorkerRef.current = null
+    }
+    try {
+      scanWorkerRef.current = createScanWorker()
+    } catch {
+      scanWorkerRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    restartScanWorker()
+    return () => {
+      if (scanWorkerRef.current) {
+        scanWorkerRef.current.terminate()
+        scanWorkerRef.current = null
+      }
+    }
   }, [])
 
   const reloadHistoryFromDb = async () => {
@@ -746,11 +824,12 @@ function App() {
         if (cancelled) return
         dbRef.current = db
 
-        const [savedSettings, savedPanoramas] = await Promise.all([
+        const [savedSettings, savedPanoramas, savedRootHandles, savedRootHandle] = await Promise.all([
           dbGet(db, SETTINGS_STORE, 'app'),
           dbGetAll(db, PANORAMAS_STORE),
+          dbGet(db, SETTINGS_STORE, ROOT_HANDLES_KEY),
+          dbGet(db, SETTINGS_STORE, ROOT_HANDLE_KEY),
         ])
-        const savedRootHandle = await dbGet(db, SETTINGS_STORE, ROOT_HANDLE_KEY)
         if (cancelled) return
 
         if (savedSettings?.value) {
@@ -767,6 +846,9 @@ function App() {
           if (s.panelTileSize === 'small' || s.panelTileSize === 'large') setPanelTileSize(s.panelTileSize)
           if (s.homeSortOrder) setHomeSortOrder(s.homeSortOrder)
           if (s.panelSortOrder) setPanelSortOrder(s.panelSortOrder)
+          if (s.panelContentMode === 'folders' || s.panelContentMode === 'panoramas') {
+            setPanelContentMode(s.panelContentMode)
+          }
           if (s.collapsedGroups && typeof s.collapsedGroups === 'object') {
             const nextCollapsed = {}
             for (const [key, value] of Object.entries(s.collapsedGroups)) {
@@ -797,24 +879,46 @@ function App() {
         const sorted = cleanedPanoramas.sort((a, b) => b.createdAt - a.createdAt)
         setHistoryItems(sorted)
 
-        if (savedRootHandle?.value) {
-          rootDirHandleRef.current = savedRootHandle.value
-          try {
-            const perm = await savedRootHandle.value.queryPermission({ mode: 'read' })
-            setHasFolderAccess(perm === 'granted')
-          } catch {
-            setHasFolderAccess(false)
+        const handlesFromNewKey = Array.isArray(savedRootHandles?.value) ? savedRootHandles.value.filter(Boolean) : []
+        const handlesFromLegacyKey = savedRootHandle?.value ? [savedRootHandle.value] : []
+        const initialHandles = handlesFromNewKey.length > 0 ? handlesFromNewKey : handlesFromLegacyKey
+        rootDirHandlesRef.current = initialHandles
+        rootDirHandleRef.current = initialHandles[0] || null
+        if (handlesFromNewKey.length === 0 && initialHandles.length > 0) {
+          await dbPut(db, SETTINGS_STORE, { key: ROOT_HANDLES_KEY, value: initialHandles }).catch(() => {})
+        }
+        if (initialHandles.length > 0) {
+          let hasAccess = false
+          for (const handle of initialHandles) {
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              const perm = await handle.queryPermission({ mode: 'read' })
+              if (perm === 'granted') {
+                hasAccess = true
+                break
+              }
+            } catch {
+              // ignore
+            }
           }
+          setHasFolderAccess(hasAccess)
+        } else {
+          setHasFolderAccess(false)
         }
 
         const unknownItems = sorted.filter((item) => !item.device || item.device === 'Nieznane urzadzenie')
         if (unknownItems.length > 0) {
-          const rootHandle = rootDirHandleRef.current
-          const canReadRoot = rootHandle ? await ensureReadPermission(rootHandle) : false
+          const accessibleRoots = await getAccessibleRootHandles(false)
           for (const item of unknownItems) {
-            if (cancelled || !item.relativePath || !canReadRoot) continue
+            if (cancelled || !item.relativePath || accessibleRoots.length === 0) continue
+            let file = null
+            for (const rootHandle of accessibleRoots) {
+              // eslint-disable-next-line no-await-in-loop
+              file = await getFileFromRelativePath(rootHandle, item.relativePath)
+              if (file) break
+            }
+            if (!file) continue
             try {
-              const file = await getFileFromRelativePath(rootHandle, item.relativePath)
               if (!file) continue
               const parsed = await exifr.parse(file, {
                 tiff: true,
@@ -861,6 +965,7 @@ function App() {
       panelTileSize,
       homeSortOrder,
       panelSortOrder,
+      panelContentMode,
       collapsedGroups,
     }
     dbPut(db, SETTINGS_STORE, { key: 'app', value }).catch(() => {})
@@ -877,6 +982,7 @@ function App() {
     panelTileSize,
     homeSortOrder,
     panelSortOrder,
+    panelContentMode,
     collapsedGroups,
   ])
 
@@ -981,8 +1087,11 @@ function App() {
     if (!rootHandle || !relativePath) return null
     const parts = splitRelativePath(relativePath)
     if (parts.length === 0) return null
-    const candidates = [parts]
-    if (parts.length > 1) candidates.push(parts.slice(1))
+    const candidates = []
+    for (let i = 0; i < parts.length; i += 1) {
+      const candidate = parts.slice(i)
+      if (candidate.length > 0) candidates.push(candidate)
+    }
 
     for (const candidateParts of candidates) {
       try {
@@ -1003,8 +1112,11 @@ function App() {
     if (!rootHandle || !relativePath) return null
     const parts = splitRelativePath(relativePath)
     if (parts.length <= 1) return rootHandle
-    const candidates = [parts]
-    if (parts.length > 1) candidates.push(parts.slice(1))
+    const candidates = []
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const candidate = parts.slice(i)
+      if (candidate.length > 0) candidates.push(candidate)
+    }
 
     for (const candidateParts of candidates) {
       try {
@@ -1020,11 +1132,16 @@ function App() {
     return rootHandle
   }
 
-  const findFileByNameInTree = async (rootHandle, targetName) => {
-    if (!rootHandle || !targetName) return null
+  const findFilesByNameInTree = async (rootHandle, targetName, maxMatches = 24) => {
+    if (!rootHandle || !targetName) return []
+    const targetRaw = String(targetName || '').trim()
+    const targetLower = targetRaw.toLowerCase()
+    const targetStem = targetLower.replace(/\.[^.]+$/, '')
     const queue = [{ dir: rootHandle, pathPrefix: '' }]
     let visited = 0
-    const visitLimit = 50000
+    const visitLimit = 300000
+    const exactMatches = []
+    const stemMatches = []
 
     while (queue.length > 0 && visited < visitLimit) {
       const { dir, pathPrefix } = queue.shift()
@@ -1034,12 +1151,97 @@ function App() {
         if (visited >= visitLimit) break
         if (handle.kind === 'directory') {
           queue.push({ dir: handle, pathPrefix: `${pathPrefix}${name}/` })
-        } else if (handle.kind === 'file' && name === targetName) {
-          return { file: await handle.getFile(), relativePath: `${pathPrefix}${name}` }
+        } else if (handle.kind === 'file') {
+          const entryNameLower = String(name || '').toLowerCase()
+          const isExactName = entryNameLower === targetLower
+          const isStemMatch = !isExactName && entryNameLower.replace(/\.[^.]+$/, '') === targetStem
+          if (!isExactName && !isStemMatch) continue
+          const candidate = { file: await handle.getFile(), relativePath: `${pathPrefix}${name}` }
+          if (isExactName) {
+            exactMatches.push(candidate)
+          } else {
+            stemMatches.push(candidate)
+          }
+          if (exactMatches.length >= maxMatches) return exactMatches
+          if (exactMatches.length + stemMatches.length >= maxMatches) {
+            return [...exactMatches, ...stemMatches].slice(0, maxMatches)
+          }
         }
       }
     }
-    return null
+    return [...exactMatches, ...stemMatches].slice(0, maxMatches)
+  }
+
+  const buildNameTokens = (name) => {
+    const raw = String(name || '').trim().toLowerCase()
+    if (!raw) return []
+    const noExt = raw.replace(/\.[^.]+$/, '')
+    const tokens = new Set([raw, noExt])
+    const camToken = noExt.match(/cam_\d{14}_\d{4}/i)?.[0]?.toLowerCase()
+    if (camToken) tokens.add(camToken)
+    const dateToken = noExt.match(/\d{14}/)?.[0]
+    if (dateToken) tokens.add(dateToken.toLowerCase())
+    return Array.from(tokens).filter(Boolean)
+  }
+
+  const findFilesByLooseNameInTree = async (rootHandle, targetName, maxMatches = 24) => {
+    if (!rootHandle || !targetName) return []
+    const tokens = buildNameTokens(targetName)
+    if (tokens.length === 0) return []
+    const queue = [{ dir: rootHandle, pathPrefix: '' }]
+    let visited = 0
+    const visitLimit = 300000
+    const matches = []
+
+    while (queue.length > 0 && visited < visitLimit) {
+      const { dir, pathPrefix } = queue.shift()
+      // eslint-disable-next-line no-restricted-syntax
+      for await (const [name, handle] of dir.entries()) {
+        visited += 1
+        if (visited >= visitLimit) break
+        if (handle.kind === 'directory') {
+          queue.push({ dir: handle, pathPrefix: `${pathPrefix}${name}/` })
+        } else if (handle.kind === 'file') {
+          const entryNameLower = String(name || '').toLowerCase()
+          const entryNoExt = entryNameLower.replace(/\.[^.]+$/, '')
+          const matched = tokens.some((token) => entryNameLower.includes(token) || entryNoExt.includes(token))
+          if (!matched) continue
+          matches.push({ file: await handle.getFile(), relativePath: `${pathPrefix}${name}` })
+          if (matches.length >= maxMatches) return matches
+        }
+      }
+    }
+    return matches
+  }
+
+  const findFilesByNameAcrossRoots = async (rootHandles, targetName, maxMatches = 48) => {
+    const roots = Array.isArray(rootHandles) ? rootHandles.filter(Boolean) : []
+    if (roots.length === 0 || !targetName) return []
+    const merged = []
+    for (const rootHandle of roots) {
+      const remaining = Math.max(0, maxMatches - merged.length)
+      if (remaining <= 0) break
+      // eslint-disable-next-line no-await-in-loop
+      const found = await findFilesByNameInTree(rootHandle, targetName, remaining)
+      if (found.length > 0) {
+        merged.push(...found.map((entry) => ({ ...entry, rootName: rootHandle?.name || '', rootHandle })))
+      }
+    }
+    return merged.slice(0, maxMatches)
+  }
+
+  const findFilesByLooseNameAcrossRoots = async (rootHandles, targetName, maxMatches = 48) => {
+    const roots = Array.isArray(rootHandles) ? rootHandles.filter(Boolean) : []
+    if (roots.length === 0 || !targetName) return []
+    const merged = []
+    for (const rootHandle of roots) {
+      const remaining = Math.max(0, maxMatches - merged.length)
+      if (remaining <= 0) break
+      // eslint-disable-next-line no-await-in-loop
+      const found = await findFilesByLooseNameInTree(rootHandle, targetName, remaining)
+      if (found.length > 0) merged.push(...found.map((entry) => ({ ...entry, rootName: rootHandle?.name || '', rootHandle })))
+    }
+    return merged.slice(0, maxMatches)
   }
 
   const formatDaySeparator = (timestamp) =>
@@ -1234,7 +1436,214 @@ function App() {
     )
   }
 
-  const saveHistoryEntry = async ({ file, image, width, height, projection, metadata, fingerprint, relativePath }) => {
+  const saveScannedHistoryEntry = async (candidate) => {
+    const db = dbRef.current
+    if (!db || !candidate) return false
+
+    const existing = await dbGetByIndex(db, PANORAMAS_STORE, 'fingerprint', candidate.fingerprint).catch(() => null)
+    if (existing) return false
+
+    const createdAt = Number(candidate.createdAt) || Date.now()
+    const entry = {
+      id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name: candidate.name,
+      width: candidate.width,
+      height: candidate.height,
+      projection: candidate.projection,
+      fingerprint: candidate.fingerprint,
+      createdAt,
+      dateKey: getDateGroupingKey(createdAt),
+      device: candidate.device || 'Unknown device',
+      relativePath: normalizeRelativePath(candidate.relativePath || ''),
+      rootName: candidate.rootName ? String(candidate.rootName) : '',
+      thumbDataUrl: candidate.thumbDataUrl || '',
+    }
+
+    await dbPut(db, PANORAMAS_STORE, entry)
+    setHistoryItems((prev) => [entry, ...prev])
+    return true
+  }
+
+  const scanFilesOnMainThread = async (fileItems) => {
+    scanCancelledRef.current = false
+    setIsScanInProgress(true)
+    let added = 0
+    let duplicates = 0
+    let tooLarge = 0
+    let checked = 0
+    for (let i = 0; i < fileItems.length; i += 1) {
+      if (scanCancelledRef.current) break
+      const item = fileItems[i]
+      try {
+        const result = await ingestFileToHistory(item.file, {
+          relativePath: item.relativePath || '',
+          rootName: item.rootName || '',
+        })
+        if (result === 'added') added += 1
+        if (result === 'duplicate') duplicates += 1
+        if (result === 'too-large') tooLarge += 1
+      } catch {
+        // skip unreadable files
+      }
+      checked += 1
+      scanProgressRef.current = { added, duplicates, tooLarge, checked }
+      if ((i + 1) % 10 === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+    }
+    setIsScanInProgress(false)
+    return { added, duplicates, tooLarge, checked, canceled: scanCancelledRef.current }
+  }
+
+  const scanFilesWithWorker = async (fileItems, progressPrefix = 'Scanning folder') => {
+    if (!Array.isArray(fileItems) || fileItems.length === 0) {
+      return { added: 0, duplicates: 0, tooLarge: 0, checked: 0 }
+    }
+
+    const worker = scanWorkerRef.current
+    if (!worker) {
+      return scanFilesOnMainThread(fileItems)
+    }
+
+    const db = dbRef.current
+    if (!db) {
+      return { added: 0, duplicates: 0, tooLarge: 0, checked: 0 }
+    }
+
+    scanCancelledRef.current = false
+    setIsScanInProgress(true)
+    let added = 0
+    let duplicates = 0
+    let tooLarge = 0
+    let checked = 0
+    scanProgressRef.current = { added: 0, duplicates: 0, tooLarge: 0, checked: 0 }
+    const knownFingerprints = new Set()
+    const total = fileItems.length
+
+    return new Promise((resolve, reject) => {
+      let finished = false
+      let queue = Promise.resolve()
+      scanPromiseResolveRef.current = (payload) => {
+        if (finished) return
+        finished = true
+        cleanup()
+        setIsScanInProgress(false)
+        resolve(payload)
+      }
+
+      const cleanup = () => {
+        scanPromiseResolveRef.current = null
+        worker.removeEventListener('message', onMessage)
+        worker.removeEventListener('error', onError)
+      }
+
+      const onMessage = (event) => {
+        const msg = event.data || {}
+        if (scanCancelledRef.current) return
+        if (msg.type === 'file-processed') {
+          const result = msg.result || {}
+          checked += 1
+
+          queue = queue.then(async () => {
+            if (scanCancelledRef.current) return
+            if (result.kind === 'too-large') {
+              tooLarge += 1
+            } else if (result.kind === 'candidate' && result.data?.fingerprint) {
+              const fingerprint = result.data.fingerprint
+              if (knownFingerprints.has(fingerprint)) {
+                duplicates += 1
+              } else {
+                knownFingerprints.add(fingerprint)
+                const exists = await dbGetByIndex(db, PANORAMAS_STORE, 'fingerprint', fingerprint).catch(() => null)
+                if (exists) {
+                  duplicates += 1
+                } else {
+                  const saved = await saveScannedHistoryEntry(result.data)
+                  if (saved) added += 1
+                  else duplicates += 1
+                }
+              }
+            }
+
+            scanProgressRef.current = { added, duplicates, tooLarge, checked }
+            setStatus(
+              `${progressPrefix}... ${checked}/${total} | added: ${added}, duplicates: ${duplicates}, >100MB: ${tooLarge}`,
+            )
+          })
+          return
+        }
+
+        if (msg.type === 'done') {
+          queue
+            .then(() => {
+              if (finished) return
+              finished = true
+              cleanup()
+              setIsScanInProgress(false)
+              resolve({ added, duplicates, tooLarge, checked })
+            })
+            .catch((err) => {
+              if (finished) return
+              finished = true
+              cleanup()
+              setIsScanInProgress(false)
+              reject(err)
+            })
+        }
+      }
+
+      const onError = (error) => {
+        if (finished) return
+        finished = true
+        cleanup()
+        setIsScanInProgress(false)
+        reject(error)
+      }
+
+      worker.addEventListener('message', onMessage)
+      worker.addEventListener('error', onError)
+      worker.postMessage({
+        type: 'scan',
+        files: fileItems,
+        options: {
+          maxSizeBytes: MAX_LIBRARY_FILE_SIZE_BYTES,
+          minPanoramaRatio: MIN_PANORAMA_RATIO,
+          projectionMode,
+        },
+      })
+    })
+  }
+
+  const cancelScan = () => {
+    if (!isScanInProgress) return
+    scanCancelledRef.current = true
+    const snapshot = scanProgressRef.current
+    restartScanWorker()
+    if (scanPromiseResolveRef.current) {
+      scanPromiseResolveRef.current({
+        added: snapshot.added || 0,
+        duplicates: snapshot.duplicates || 0,
+        tooLarge: snapshot.tooLarge || 0,
+        checked: snapshot.checked || 0,
+        canceled: true,
+      })
+    } else {
+      setIsScanInProgress(false)
+    }
+    setStatus(t('strings.scanCanceled'))
+  }
+
+  const saveHistoryEntry = async ({
+    file,
+    image,
+    width,
+    height,
+    projection,
+    metadata,
+    fingerprint,
+    relativePath,
+    rootName = '',
+  }) => {
     const db = dbRef.current
     if (!db) return { added: false, reason: 'no-db' }
 
@@ -1256,6 +1665,7 @@ function App() {
       dateKey: getDateGroupingKey(createdAt),
       device,
       relativePath: normalizeRelativePath(relativePath),
+      rootName: rootName ? String(rootName) : '',
       thumbDataUrl: buildThumbnailDataUrl(image),
     }
 
@@ -1302,7 +1712,7 @@ function App() {
   }
 
   const ingestFileToHistory = async (file, options = {}) => {
-    const { relativePath = '' } = options
+    const { relativePath = '', rootName = '' } = options
     if (!file?.type?.startsWith('image/')) return false
     const db = dbRef.current
     if (!db) return 'skip'
@@ -1340,6 +1750,7 @@ function App() {
       metadata: parsed,
       fingerprint,
       relativePath,
+      rootName,
     })
     URL.revokeObjectURL(tmpUrl)
     return saveResult.added ? 'added' : 'duplicate'
@@ -1349,8 +1760,12 @@ function App() {
     const { persistHistory = true, forcedProjection = null, loadingText = 'Loading panorama...' } = options
 
     if (!file || !file.type.startsWith('image/')) {
+      debugOpenHistory('processPanoramaFile: rejected non-image', {
+        name: file?.name,
+        type: file?.type,
+      })
       setStatus('This is not an image file.')
-      return
+      return false
     }
 
     try {
@@ -1383,19 +1798,41 @@ function App() {
 
       const resolvedProjection = forcedProjection || getResolvedProjection(width, height, parsed)
       setActiveCapturedAt(extractCreatedAt(file, parsed))
+      debugOpenHistory('processPanoramaFile: parsed', {
+        name: file.name,
+        width,
+        height,
+        ratio: Number((width / height).toFixed(4)),
+        resolvedProjection,
+        forcedProjection,
+        hasMetadata: Boolean(parsed),
+      })
 
       if (!isPanoramaCandidateWithMetadata(width, height, parsed)) {
         URL.revokeObjectURL(tmpUrl)
+        debugOpenHistory('processPanoramaFile: rejected panorama candidate', {
+          name: file.name,
+          width,
+          height,
+          ratio: Number((width / height).toFixed(4)),
+          hasPanoramaMetadata: hasPanoramaMetadata(parsed),
+        })
         setStatus(`This does not look like a panorama: ${width}x${height} (min ratio ~${MIN_PANORAMA_RATIO}:1 or GPano metadata).`)
         setIsBusy(false)
-        return
+        return false
       }
 
       if (resolvedProjection === 'spherical' && Math.abs(ratio - 2) > 0.15) {
         URL.revokeObjectURL(tmpUrl)
+        debugOpenHistory('processPanoramaFile: rejected spherical ratio', {
+          name: file.name,
+          width,
+          height,
+          ratio: Number(ratio.toFixed(4)),
+        })
         setStatus(`Spherical mode requires near 2:1 ratio. Received ${width}x${height}.`)
         setIsBusy(false)
-        return
+        return false
       }
 
       if (resolvedProjection !== activeProjectionRef.current) {
@@ -1416,6 +1853,8 @@ function App() {
 
       if (persistHistory) {
         const fingerprint = await createFileFingerprint(file)
+        const relPath = file.webkitRelativePath || ''
+        const inferredRootName = splitRelativePath(relPath)[0] || ''
         const saveResult = await saveHistoryEntry({
           file,
           image,
@@ -1424,19 +1863,78 @@ function App() {
           projection: resolvedProjection,
           metadata: parsed,
           fingerprint,
-          relativePath: file.webkitRelativePath || '',
+          relativePath: relPath,
+          rootName: inferredRootName,
         })
         if (saveResult.reason === 'duplicate') {
           setStatus((prev) => `${prev} (Already in history)`)
         }
       }
+      debugOpenHistory('processPanoramaFile: success', {
+        name: file.name,
+        projection: resolvedProjection,
+      })
+      return true
 
     } catch {
+      debugOpenHistory('processPanoramaFile: exception', {
+        name: file?.name,
+      })
       setIsExifLoading(false)
       setStatus('Could not load image.')
+      return false
     } finally {
       setIsBusy(false)
     }
+  }
+
+  const getConnectedRootHandles = () => {
+    const handles = Array.isArray(rootDirHandlesRef.current) ? rootDirHandlesRef.current.filter(Boolean) : []
+    if (handles.length > 0) return handles
+    if (rootDirHandleRef.current) return [rootDirHandleRef.current]
+    return []
+  }
+
+  const persistRootHandles = async (handles) => {
+    const nextHandles = Array.isArray(handles) ? handles.filter(Boolean) : []
+    rootDirHandlesRef.current = nextHandles
+    rootDirHandleRef.current = nextHandles[0] || null
+    const db = dbRef.current
+    if (!db) return
+    await dbPut(db, SETTINGS_STORE, { key: ROOT_HANDLES_KEY, value: nextHandles }).catch(() => {})
+    if (nextHandles[0]) {
+      await dbPut(db, SETTINGS_STORE, { key: ROOT_HANDLE_KEY, value: nextHandles[0] }).catch(() => {})
+    }
+  }
+
+  const addConnectedRootHandle = async (dirHandle) => {
+    if (!dirHandle) return { added: false, handles: getConnectedRootHandles() }
+    const existing = getConnectedRootHandles()
+    for (const handle of existing) {
+      if (!handle) continue
+      try {
+        if (typeof handle.isSameEntry === 'function') {
+          // eslint-disable-next-line no-await-in-loop
+          const same = await handle.isSameEntry(dirHandle)
+          if (same) return { added: false, handles: existing }
+        }
+      } catch {
+        // ignore comparison errors
+      }
+    }
+    const next = [...existing, dirHandle]
+    await persistRootHandles(next)
+    return { added: true, handles: next }
+  }
+
+  const getAccessibleRootHandles = async (requestPermission = true) => {
+    const connected = getConnectedRootHandles()
+    const accessible = []
+    for (const handle of connected) {
+      const granted = requestPermission ? await ensureReadPermission(handle) : await handle.queryPermission({ mode: 'read' }).catch(() => 'denied') === 'granted'
+      if (granted) accessible.push(handle)
+    }
+    return accessible
   }
 
   const handleFile = async (file) => {
@@ -1480,6 +1978,7 @@ function App() {
         ...item,
         name: file.name || item.name,
         relativePath: normalizeRelativePath(nextRelativePath),
+        rootName: rootHandle?.name || item.rootName || '',
       }
       const db = dbRef.current
       if (db) {
@@ -1493,38 +1992,323 @@ function App() {
     }
   }
 
+  const fastRelinkUnknownRootItemsForRoot = async (rootHandle, options = {}) => {
+    if (!rootHandle) return 0
+    const rootName = String(rootHandle?.name || '').trim()
+    if (!rootName) return 0
+
+    const maxItems = Number.isFinite(options.maxItems) ? Math.max(1, Number(options.maxItems)) : 220
+    const maxTrim = Number.isFinite(options.maxTrim) ? Math.max(1, Number(options.maxTrim)) : 5
+    const missing = historyItems.filter((entry) => !entry?.rootName && entry?.relativePath).slice(0, maxItems)
+    if (missing.length === 0) return 0
+
+    const updates = []
+    for (const entry of missing) {
+      const originalPath = normalizeRelativePath(entry.relativePath || '')
+      if (!originalPath) continue
+      let matchedPath = ''
+      let matchedFile = null
+
+      // First, try the exact path.
+      // eslint-disable-next-line no-await-in-loop
+      matchedFile = await getFileFromRelativePath(rootHandle, originalPath)
+      if (matchedFile) {
+        matchedPath = originalPath
+      } else {
+        const parts = splitRelativePath(originalPath)
+        const trimLimit = Math.min(Math.max(0, parts.length - 1), maxTrim)
+        for (let trim = 1; trim <= trimLimit; trim += 1) {
+          const candidatePath = parts.slice(trim).join('/')
+          if (!candidatePath) continue
+          // eslint-disable-next-line no-await-in-loop
+          matchedFile = await getFileFromRelativePath(rootHandle, candidatePath)
+          if (matchedFile) {
+            matchedPath = candidatePath
+            break
+          }
+        }
+      }
+
+      if (!matchedPath) continue
+      updates.push({
+        ...entry,
+        name: matchedFile?.name || entry.name,
+        relativePath: matchedPath,
+        rootName,
+      })
+    }
+
+    if (updates.length === 0) return 0
+    const db = dbRef.current
+    if (db) {
+      await Promise.all(updates.map((entry) => dbPut(db, PANORAMAS_STORE, entry).catch(() => null)))
+    }
+    const updateById = new Map(updates.map((entry) => [entry.id, entry]))
+    setHistoryItems((prev) => prev.map((entry) => updateById.get(entry.id) || entry))
+    debugOpenHistory('openHistoryItem:fast unknown-root relink complete', {
+      rootName,
+      checked: missing.length,
+      repaired: updates.length,
+    })
+    return updates.length
+  }
+
+  const applyAutoRootMappingFromResolvedPath = async (item, resolvedPath, resolvedRootName, resolvedRootHandle = null) => {
+    const normalizedResolved = normalizeRelativePath(resolvedPath)
+    const normalizedOriginal = normalizeRelativePath(item?.relativePath || '')
+    const rootName = String(resolvedRootName || '').trim()
+    const originalRootName = String(item?.rootName || '').trim()
+    if (!normalizedResolved || !normalizedOriginal || !rootName) return
+    if (originalRootName) return
+
+    const oldParts = splitRelativePath(normalizedOriginal)
+    const newParts = splitRelativePath(normalizedResolved)
+    let mode = ''
+    let trimCount = 0
+    let droppedPrefix = ''
+    let addedPrefix = ''
+    if (oldParts.length > newParts.length) {
+      const maxTrim = oldParts.length - newParts.length
+      for (let t = 1; t <= maxTrim; t += 1) {
+        if (oldParts.slice(t).join('/') === normalizedResolved) {
+          trimCount = t
+          droppedPrefix = oldParts.slice(0, trimCount).join('/')
+          if (droppedPrefix) mode = 'trim'
+          break
+        }
+      }
+    } else if (newParts.length > oldParts.length) {
+      const prefixLen = newParts.length - oldParts.length
+      if (newParts.slice(prefixLen).join('/') === normalizedOriginal) {
+        addedPrefix = newParts.slice(0, prefixLen).join('/')
+        if (addedPrefix) mode = 'prepend'
+      }
+    }
+    if (!mode) return
+
+    const missingEntries = historyItems.filter((entry) => !entry?.rootName && entry?.relativePath).slice(0, 360)
+    if (missingEntries.length === 0) return
+
+    const db = dbRef.current
+    const dbUpdates = []
+    for (const entry of missingEntries) {
+      const entryPath = normalizeRelativePath(entry?.relativePath || '')
+      if (!entryPath) continue
+      let nextPath = ''
+      if (mode === 'trim') {
+        if (entryPath !== droppedPrefix && !entryPath.startsWith(`${droppedPrefix}/`)) continue
+        const entryParts = splitRelativePath(entryPath)
+        if (entryParts.length <= trimCount) continue
+        nextPath = entryParts.slice(trimCount).join('/')
+      } else if (mode === 'prepend') {
+        if (entryPath === addedPrefix || entryPath.startsWith(`${addedPrefix}/`)) continue
+        nextPath = normalizeRelativePath(`${addedPrefix}/${entryPath}`)
+      }
+      if (!nextPath || nextPath === entryPath) continue
+      if (resolvedRootHandle) {
+        // eslint-disable-next-line no-await-in-loop
+        const exists = await getFileFromRelativePath(resolvedRootHandle, nextPath)
+        if (!exists) continue
+      }
+      dbUpdates.push({
+        ...entry,
+        relativePath: nextPath,
+        rootName,
+      })
+    }
+
+    if (dbUpdates.length === 0) return
+    if (db) {
+      await Promise.all(dbUpdates.map((entry) => dbPut(db, PANORAMAS_STORE, entry).catch(() => null)))
+    }
+    const updatesById = new Map(dbUpdates.map((entry) => [entry.id, entry]))
+    setHistoryItems((prev) => prev.map((entry) => updatesById.get(entry.id) || entry))
+    debugOpenHistory('openHistoryItem:auto root mapping applied', {
+      mode,
+      rootName,
+      droppedPrefix,
+      trimCount,
+      addedPrefix,
+      changed: dbUpdates.length,
+    })
+  }
+
   const openHistoryItem = async (item) => {
     if (!item) return
-    const root = rootDirHandleRef.current
-    if (!root) {
+    debugOpenHistory('openHistoryItem:start', {
+      id: item.id,
+      name: item.name,
+      relativePath: item.relativePath,
+      projection: item.projection,
+      hasFingerprint: Boolean(item.fingerprint),
+    })
+    const connectedRoots = getConnectedRootHandles()
+    if (connectedRoots.length === 0) {
+      debugOpenHistory('openHistoryItem:abort no root folder')
       setStatus('No folder connected. Click "Select folder".')
       return
     }
 
-    const granted = await ensureReadPermission(root)
-    setHasFolderAccess(granted)
-    if (!granted) {
+    const accessibleRootsRaw = await getAccessibleRootHandles(true)
+    const preferredRootName = String(item?.rootName || '').trim().toLowerCase()
+    const accessibleRoots = [...accessibleRootsRaw].sort((a, b) => {
+      const aName = String(a?.name || '').trim().toLowerCase()
+      const bName = String(b?.name || '').trim().toLowerCase()
+      const aScore = preferredRootName && aName === preferredRootName ? 0 : 1
+      const bScore = preferredRootName && bName === preferredRootName ? 0 : 1
+      if (aScore !== bScore) return aScore - bScore
+      return 0
+    })
+    setHasFolderAccess(accessibleRoots.length > 0)
+    debugOpenHistory('openHistoryItem:connected roots', {
+      connected: connectedRoots.length,
+      accessible: accessibleRoots.length,
+      rootNames: accessibleRoots.map((h) => h?.name || '(unknown)'),
+    })
+    if (accessibleRoots.length === 0) {
       setStatus('No folder permission. Use "Refresh access".')
       return
     }
+    const pickerRoot = accessibleRoots[0]
 
-    const persistResolvedPath = async (resolvedPath, nameOverride = null) => {
+    const persistResolvedPath = async (resolvedPath, nameOverride = null, rootNameOverride = null, rootHandleOverride = null) => {
       const normalized = normalizeRelativePath(resolvedPath)
       if (!normalized) return
+      const resolvedRoot = String(rootNameOverride || item.rootName || '').trim()
       const nextItem = {
         ...item,
         relativePath: normalized,
         name: nameOverride || item.name,
+        rootName: resolvedRoot,
       }
       const db = dbRef.current
       if (db) {
         await dbPut(db, PANORAMAS_STORE, nextItem).catch(() => {})
       }
       setHistoryItems((prev) => prev.map((entry) => (entry.id === item.id ? nextItem : entry)))
+      debugOpenHistory('openHistoryItem:persisted resolved path', {
+        id: item.id,
+        relativePath: normalized,
+        name: nextItem.name,
+      })
+      await applyAutoRootMappingFromResolvedPath(item, normalized, resolvedRoot, rootHandleOverride)
+
+      // Opportunistic fast repair for "(unknown root)" entries against this same root.
+      if (resolvedRoot) {
+        const now = Date.now()
+        const key = resolvedRoot.toLowerCase()
+        const lastRun = Number(unknownRootFastRepairRef.current.get(key) || 0)
+        if (now - lastRun > 12000) {
+          unknownRootFastRepairRef.current.set(key, now)
+          const resolvedHandle = accessibleRoots.find(
+            (handle) => String(handle?.name || '').trim().toLowerCase() === key,
+          )
+          if (resolvedHandle) {
+            await fastRelinkUnknownRootItemsForRoot(resolvedHandle, { maxItems: 280, maxTrim: 6 })
+          }
+        }
+      }
+    }
+
+    const openHistoryFile = async (file) => {
+      if (!file) return false
+      debugOpenHistory('openHistoryFile:try', {
+        name: file.name,
+        size: file.size,
+        projection: item.projection || null,
+      })
+      const openedWithStoredProjection = await processPanoramaFile(file, {
+        persistHistory: false,
+        forcedProjection: item.projection || null,
+        loadingText: 'Loading panorama...',
+      })
+      if (openedWithStoredProjection) {
+        debugOpenHistory('openHistoryFile:success with stored projection', { name: file.name })
+        return true
+      }
+      const openedAuto = await processPanoramaFile(file, {
+        persistHistory: false,
+        forcedProjection: null,
+        loadingText: 'Loading panorama...',
+      })
+      debugOpenHistory('openHistoryFile:auto projection result', { name: file.name, openedAuto })
+      return openedAuto
+    }
+
+    const tryOpenCandidates = async (candidates, options = {}) => {
+      const { allowRelaxed = false } = options
+      if (!Array.isArray(candidates) || candidates.length === 0) return false
+
+      const usable = candidates.filter((candidate) => candidate?.file)
+      if (usable.length === 0) return false
+
+      // Fast path: one candidate from search, try opening immediately.
+      if (usable.length === 1) {
+        const only = usable[0]
+        const opened = await openHistoryFile(only.file)
+        if (opened) {
+          await persistResolvedPath(only.relativePath, only.file.name, only.rootName || '', only.rootHandle || null)
+          debugOpenHistory('tryOpenCandidates:opened single-fast', {
+            relativePath: only.relativePath,
+            name: only.file?.name,
+          })
+          return true
+        }
+      }
+
+      const strictCandidates = []
+      const relaxedCandidates = []
+      if (item.fingerprint) {
+        for (const candidate of usable) {
+          const fp = await createFileFingerprint(candidate.file).catch(() => null)
+          if (fp === item.fingerprint) {
+            strictCandidates.push(candidate)
+          } else if (allowRelaxed) {
+            relaxedCandidates.push(candidate)
+          }
+        }
+      } else {
+        strictCandidates.push(...usable)
+      }
+
+      debugOpenHistory('tryOpenCandidates:prepared', {
+        item: item.name,
+        total: usable.length,
+        strict: strictCandidates.length,
+        relaxed: relaxedCandidates.length,
+        allowRelaxed,
+      })
+
+      for (const candidate of strictCandidates) {
+        const opened = await openHistoryFile(candidate.file)
+        if (!opened) continue
+        await persistResolvedPath(candidate.relativePath, candidate.file.name, candidate.rootName || '', candidate.rootHandle || null)
+        debugOpenHistory('tryOpenCandidates:opened strict', {
+          relativePath: candidate.relativePath,
+          name: candidate.file?.name,
+        })
+        return true
+      }
+
+      if (!allowRelaxed) return false
+      for (const candidate of relaxedCandidates.slice(0, 8)) {
+        const opened = await openHistoryFile(candidate.file)
+        if (!opened) continue
+        await persistResolvedPath(candidate.relativePath, candidate.file.name, candidate.rootName || '', candidate.rootHandle || null)
+        debugOpenHistory('tryOpenCandidates:opened relaxed', {
+          relativePath: candidate.relativePath,
+          name: candidate.file?.name,
+        })
+        return true
+      }
+
+      debugOpenHistory('tryOpenCandidates:no candidate opened')
+      return false
     }
 
     if (!item?.relativePath) {
-      const relinked = await relinkHistoryItemFromPicker(item, root)
+      debugOpenHistory('openHistoryItem:no relativePath, trying picker')
+      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
       if (!relinked) {
         setStatus('No file path in history. Pick panorama file manually.')
       }
@@ -1532,35 +2316,86 @@ function App() {
     }
 
     try {
-      const file = await getFileFromRelativePath(root, item.relativePath)
+      let file = null
+      let resolvedRootName = ''
+      let resolvedRootHandle = null
+      for (const rootHandle of accessibleRoots) {
+        // eslint-disable-next-line no-await-in-loop
+        file = await getFileFromRelativePath(rootHandle, item.relativePath)
+        if (file) {
+          resolvedRootName = rootHandle?.name || ''
+          resolvedRootHandle = rootHandle
+          break
+        }
+      }
+      debugOpenHistory('openHistoryItem:path lookup result', {
+        relativePath: item.relativePath,
+        found: Boolean(file),
+      })
       if (!file) {
         setBusyText('Searching subfolders...')
         setIsBusy(true)
-        const found = await findFileByNameInTree(root, item.name)
+        const found = await findFilesByNameAcrossRoots(accessibleRoots, item.name, 48)
         setIsBusy(false)
-        if (found?.file) {
-          await persistResolvedPath(found.relativePath, found.file.name)
-          await processPanoramaFile(found.file, {
-            persistHistory: false,
-            forcedProjection: item.projection,
-            loadingText: 'Loading panorama...',
-          })
+        debugOpenHistory('openHistoryItem:search results (path missing)', {
+          name: item.name,
+          matches: found.length,
+        })
+        const fallbackFound =
+          found.length > 0 ? found : await findFilesByLooseNameAcrossRoots(accessibleRoots, item.name, 48)
+        debugOpenHistory('openHistoryItem:search results (path missing, loose)', {
+          name: item.name,
+          matches: fallbackFound.length,
+        })
+        const openedFromSearch = await tryOpenCandidates(fallbackFound, { allowRelaxed: true })
+        if (openedFromSearch) {
           return
         }
-        const relinked = await relinkHistoryItemFromPicker(item, root)
+        const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
         if (!relinked) {
+          const rootsInfo = accessibleRoots.map((h) => h?.name || '(unknown)').join(', ')
+          debugOpenHistory('openHistoryItem:not found in roots', { rootsInfo })
           setStatus('File not found on disk. Choose the correct panorama folder.')
         }
         return
       }
-      await processPanoramaFile(file, {
-        persistHistory: false,
-        forcedProjection: item.projection,
-        loadingText: 'Loading panorama...',
-      })
-    } catch {
+      const openedFromPath = await openHistoryFile(file)
+      if (openedFromPath) {
+        await persistResolvedPath(item.relativePath, file?.name || item.name, resolvedRootName, resolvedRootHandle)
+        return
+      }
+
+      setBusyText('Searching subfolders...')
+      setIsBusy(true)
+      const found = await findFilesByNameAcrossRoots(accessibleRoots, item.name, 48)
       setIsBusy(false)
-      const relinked = await relinkHistoryItemFromPicker(item, root)
+      debugOpenHistory('openHistoryItem:search results (open by path failed)', {
+        name: item.name,
+        matches: found.length,
+      })
+      const fallbackFound =
+        found.length > 0 ? found : await findFilesByLooseNameAcrossRoots(accessibleRoots, item.name, 48)
+      debugOpenHistory('openHistoryItem:search results (open by path failed, loose)', {
+        name: item.name,
+        matches: fallbackFound.length,
+      })
+      const openedFromSearch = await tryOpenCandidates(fallbackFound, { allowRelaxed: true })
+      if (openedFromSearch) {
+        return
+      }
+      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
+      if (!relinked) {
+        const rootsInfo = accessibleRoots.map((h) => h?.name || '(unknown)').join(', ')
+        debugOpenHistory('openHistoryItem:not found in roots after path fail', { rootsInfo })
+        setStatus('Could not open this panorama from saved path. Choose file manually.')
+      }
+    } catch (error) {
+      setIsBusy(false)
+      debugOpenHistory('openHistoryItem:exception', {
+        name: item.name,
+        message: error?.message || String(error),
+      })
+      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
       if (!relinked) {
         setStatus('File not found on disk. Choose the correct panorama folder.')
       }
@@ -1619,6 +2454,181 @@ function App() {
 
   const removeHistoryItem = async (itemId) => {
     await removeHistoryItems([itemId])
+  }
+
+  const repairLibraryLinks = async () => {
+    const connectedRoots = getConnectedRootHandles()
+    if (connectedRoots.length === 0) {
+      setStatus('No folder connected. Click "Select folder".')
+      return
+    }
+
+    const accessibleRoots = await getAccessibleRootHandles(true)
+    setHasFolderAccess(accessibleRoots.length > 0)
+    if (accessibleRoots.length === 0) {
+      setStatus('No folder permission. Use "Refresh access".')
+      return
+    }
+
+    const db = dbRef.current
+    if (!db) {
+      setStatus('Database is not ready.')
+      return
+    }
+
+    const itemsToCheck = [...historyItems]
+    if (itemsToCheck.length === 0) {
+      setStatus('Library is empty. Nothing to repair.')
+      return
+    }
+
+    let checked = 0
+    let repaired = 0
+    let missing = 0
+    const updatedById = new Map()
+    const fingerprintCache = new Map()
+    const nameIndex = new Map()
+
+    setBusyText('Repairing library links: indexing folders...')
+    setIsBusy(true)
+    try {
+      const queue = accessibleRoots.map((rootHandle, idx) => ({
+        dir: rootHandle,
+        pathPrefix: '',
+        rootKey: `${idx}:${rootHandle?.name || 'root'}`,
+        rootName: rootHandle?.name || '',
+      }))
+      let indexedFiles = 0
+
+      while (queue.length > 0) {
+        const { dir, pathPrefix, rootKey, rootName } = queue.shift()
+        // eslint-disable-next-line no-restricted-syntax
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind === 'directory') {
+            queue.push({ dir: handle, pathPrefix: `${pathPrefix}${name}/`, rootKey, rootName })
+            continue
+          }
+          indexedFiles += 1
+          const entry = {
+            relativePath: normalizeRelativePath(`${pathPrefix}${name}`),
+            handle,
+            name,
+            cacheKey: `${rootKey}|${normalizeRelativePath(`${pathPrefix}${name}`)}`,
+            rootName,
+          }
+          const key = String(name || '').toLowerCase()
+          if (!nameIndex.has(key)) nameIndex.set(key, [entry])
+          else nameIndex.get(key).push(entry)
+
+          if (indexedFiles % 400 === 0) {
+            setBusyText(`Repairing library links: indexing folders (${indexedFiles} files)...`)
+            await new Promise((resolve) => requestAnimationFrame(resolve))
+          }
+        }
+      }
+
+      setBusyText(`Repairing library links (0/${itemsToCheck.length})...`)
+      for (const item of itemsToCheck) {
+        checked += 1
+        if (checked % 8 === 0 || checked === itemsToCheck.length) {
+          setBusyText(`Repairing library links (${checked}/${itemsToCheck.length})...`)
+          await new Promise((resolve) => requestAnimationFrame(resolve))
+        }
+
+        const normalizedPath = normalizeRelativePath(item?.relativePath || '')
+        let existingFile = null
+        if (normalizedPath) {
+          for (const rootHandle of accessibleRoots) {
+            // eslint-disable-next-line no-await-in-loop
+            existingFile = await getFileFromRelativePath(rootHandle, normalizedPath)
+            if (existingFile) break
+          }
+        }
+        if (existingFile) {
+          continue
+        }
+
+        const candidates = nameIndex.get(String(item?.name || '').toLowerCase()) || []
+        let matched = null
+
+        if (candidates.length === 1 && !item?.fingerprint) {
+          matched = candidates[0]
+        } else {
+          for (const candidate of candidates) {
+            if (!candidate?.handle) continue
+            if (item?.fingerprint) {
+              const cacheKey = candidate.cacheKey || candidate.relativePath
+              let fp = fingerprintCache.get(cacheKey)
+              if (!fp) {
+                const candidateFile = await candidate.handle.getFile().catch(() => null)
+                if (!candidateFile) continue
+                fp = await createFileFingerprint(candidateFile).catch(() => null)
+                if (!fp) continue
+                fingerprintCache.set(cacheKey, fp)
+              }
+              if (fp !== item.fingerprint) continue
+            }
+            matched = candidate
+            break
+          }
+        }
+
+        if (!matched && candidates.length === 1) {
+          matched = candidates[0]
+        }
+
+        if (!matched && candidates.length > 1) {
+          const oldParts = splitRelativePath(item?.relativePath || '')
+          const tail = oldParts.slice(-2).join('/').toLowerCase()
+          if (tail) {
+            matched =
+              candidates.find((candidate) =>
+                normalizeRelativePath(candidate?.relativePath || '')
+                  .toLowerCase()
+                  .endsWith(tail),
+              ) || null
+          }
+        }
+
+        if (!matched) {
+          missing += 1
+          continue
+        }
+
+        let repairedFingerprint = item?.fingerprint || ''
+        const matchedFile = await matched.handle.getFile().catch(() => null)
+        if (matchedFile) {
+          const fp = await createFileFingerprint(matchedFile).catch(() => null)
+          if (fp) repairedFingerprint = fp
+        }
+
+        const nextItem = {
+          ...item,
+          name: matched.name || item.name,
+          relativePath: normalizeRelativePath(matched.relativePath || ''),
+          rootName: matched.rootName || item.rootName || '',
+          fingerprint: repairedFingerprint || item.fingerprint,
+        }
+        const saved = await dbPut(db, PANORAMAS_STORE, nextItem)
+          .then(() => true)
+          .catch(() => false)
+        if (!saved) continue
+        updatedById.set(nextItem.id, nextItem)
+        repaired += 1
+      }
+
+      if (updatedById.size > 0) {
+        setHistoryItems((prev) => prev.map((entry) => updatedById.get(entry.id) || entry))
+      }
+      setStatus(
+        `Repair complete (roots: ${accessibleRoots.length}). Checked: ${checked}, repaired: ${repaired}, already valid: ${Math.max(
+          0,
+          checked - repaired - missing,
+        )}, missing: ${missing}.`,
+      )
+    } finally {
+      setIsBusy(false)
+    }
   }
 
   const clearLibrary = async () => {
@@ -1778,10 +2788,17 @@ function App() {
 
     const key = `${lat.toFixed(4)},${lon.toFixed(4)}`
     const cached = localityCacheRef.current.get(key)
-    if (typeof cached === 'string') {
-      setResolvedLocality(cached)
-      setIsResolvingLocality(false)
-      return
+    if (cached && typeof cached === 'object') {
+      if (cached.ok) {
+        setResolvedLocality(cached.locality || '')
+        setIsResolvingLocality(false)
+        return
+      }
+      if (Date.now() - Number(cached.at || 0) < LOCALITY_FAILURE_RETRY_MS) {
+        setResolvedLocality('')
+        setIsResolvingLocality(false)
+        return
+      }
     }
 
     let cancelled = false
@@ -1790,31 +2807,45 @@ function App() {
 
     const resolveLocality = async () => {
       try {
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=12&addressdetails=1`,
+        const providers = [
           {
-            headers: {
-              'Accept-Language': 'pl,en',
-            },
-            signal: controller.signal,
+            url: `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=12&addressdetails=1`,
+            parse: (payload) => pickLocalityFromAddress(payload?.address || {}),
           },
-        )
-        if (!response.ok) throw new Error('reverse geocoding failed')
-        const payload = await response.json()
-        const address = payload?.address || {}
-        const locality =
-          address.city ||
-          address.town ||
-          address.village ||
-          address.municipality ||
-          address.suburb ||
-          address.county ||
-          address.state ||
-          ''
-        localityCacheRef.current.set(key, locality)
+          {
+            // Photon (OSM-based) fallback for cases when Nominatim blocks browser CORS/rate-limits.
+            url: `https://photon.komoot.io/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&lang=${encodeURIComponent(language === 'pl' ? 'pl' : 'en')}`,
+            parse: (payload) => {
+              const props = payload?.features?.[0]?.properties || {}
+              return props.city || props.name || props.county || props.state || ''
+            },
+          },
+        ]
+
+        let locality = ''
+        for (const provider of providers) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const response = await fetch(provider.url, {
+              headers: {
+                'Accept-Language': 'pl,en',
+              },
+              signal: controller.signal,
+            })
+            if (!response.ok) continue
+            // eslint-disable-next-line no-await-in-loop
+            const payload = await response.json()
+            locality = String(provider.parse(payload) || '').trim()
+            if (locality) break
+          } catch {
+            // try next provider
+          }
+        }
+
+        localityCacheRef.current.set(key, { ok: Boolean(locality), locality, at: Date.now() })
         if (!cancelled) setResolvedLocality(locality)
       } catch {
-        localityCacheRef.current.set(key, '')
+        localityCacheRef.current.set(key, { ok: false, locality: '', at: Date.now() })
         if (!cancelled) setResolvedLocality('')
       } finally {
         if (!cancelled) setIsResolvingLocality(false)
@@ -1827,23 +2858,26 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [hasActivePanorama, gpsCoords])
+  }, [hasActivePanorama, gpsCoords, language])
 
   useEffect(() => {
     if (!visibleExifTabs.includes(exifTab)) {
       setExifTab('all')
     }
   }, [exifTab, visibleExifTabs])
-  const groupedHistory = useMemo(() => {
+  const panelFilteredItems = useMemo(() => {
     const filtered = historyItems.filter((item) => {
       const projectionOk = panelProjectionFilter === 'all' || item.projection === panelProjectionFilter
       const deviceOk = panelDeviceFilter === 'all' || item.device === panelDeviceFilter
       return projectionOk && deviceOk
     })
-    const sorted = [...filtered].sort((a, b) =>
+    return [...filtered].sort((a, b) =>
       panelSortOrder === 'asc' ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
     )
-    return sorted.reduce((acc, item) => {
+  }, [historyItems, panelProjectionFilter, panelDeviceFilter, panelSortOrder])
+
+  const groupedHistory = useMemo(() => {
+    return panelFilteredItems.reduce((acc, item) => {
       const key = item.dateKey || getDateGroupingKey(item.createdAt)
       const existing = acc.find((group) => group.key === key)
       if (existing) {
@@ -1857,7 +2891,85 @@ function App() {
       })
       return acc
     }, [])
-  }, [historyItems, panelProjectionFilter, panelDeviceFilter, panelSortOrder])
+  }, [panelFilteredItems])
+
+  const panelFolderTree = useMemo(() => {
+    const connectedRoots = getConnectedRootHandles().map((handle) => handle?.name || '').filter(Boolean)
+    const topRootMap = new Map()
+    const ensureTopRoot = (rootName) => {
+      const key = rootName || '(unknown root)'
+      let rootNode = topRootMap.get(key)
+      if (rootNode) return rootNode
+      rootNode = {
+        key: `root:${key}`,
+        name: key,
+        fullPath: key,
+        rootName: key,
+        count: 0,
+        isRoot: true,
+        children: [],
+      }
+      topRootMap.set(key, rootNode)
+      return rootNode
+    }
+
+    for (const rootName of connectedRoots) {
+      ensureTopRoot(rootName)
+    }
+
+    const childMapByRoot = new Map()
+    const ensureChildNode = (rootKey, pathParts, idx) => {
+      if (!childMapByRoot.has(rootKey)) {
+        childMapByRoot.set(rootKey, new Map())
+      }
+      const nodeByPath = childMapByRoot.get(rootKey)
+      const path = pathParts.slice(0, idx + 1).join('/')
+      let node = nodeByPath.get(path)
+      if (node) return node
+      node = {
+        key: `${rootKey}:${path}`,
+        name: pathParts[idx],
+        fullPath: path,
+        rootName: rootKey,
+        count: 0,
+        isRoot: false,
+        children: [],
+      }
+      nodeByPath.set(path, node)
+      if (idx === 0) {
+        topRootMap.get(rootKey).children.push(node)
+      } else {
+        const parentPath = pathParts.slice(0, idx).join('/')
+        const parent = nodeByPath.get(parentPath)
+        if (parent) parent.children.push(node)
+      }
+      return node
+    }
+
+    for (const item of panelFilteredItems) {
+      const rootName = String(item?.rootName || '').trim() || '(unknown root)'
+      const topRoot = ensureTopRoot(rootName)
+      topRoot.count += 1
+      const normalized = normalizeRelativePath(item?.relativePath || '')
+      const parts = splitRelativePath(normalized)
+      const folderParts = parts.length > 1 ? parts.slice(0, -1) : []
+      for (let i = 0; i < folderParts.length; i += 1) {
+        const node = ensureChildNode(rootName, folderParts, i)
+        node.count += 1
+      }
+    }
+
+    const sortNodes = (nodes) => {
+      nodes.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      for (const node of nodes) {
+        if (node.children.length > 0) sortNodes(node.children)
+      }
+    }
+
+    const rootNodes = Array.from(topRootMap.values())
+    sortNodes(rootNodes)
+    return rootNodes
+  }, [panelFilteredItems])
 
   const uniqueDevices = useMemo(() => {
     const set = new Set()
@@ -1869,18 +2981,67 @@ function App() {
 
   const filteredGroupedHistory = groupedHistory
 
+  useEffect(() => {
+    let cancelled = false
+    const backfillRootNames = async () => {
+      const missing = historyItems.filter((item) => !item?.rootName && item?.relativePath).slice(0, 40)
+      if (missing.length === 0) return
+      const accessibleRoots = await getAccessibleRootHandles(false)
+      if (cancelled || accessibleRoots.length === 0) return
+
+      const updates = []
+      for (const item of missing) {
+        let matchedRootName = ''
+        for (const rootHandle of accessibleRoots) {
+          // eslint-disable-next-line no-await-in-loop
+          const file = await getFileFromRelativePath(rootHandle, item.relativePath)
+          if (file) {
+            matchedRootName = rootHandle?.name || ''
+            break
+          }
+        }
+        if (matchedRootName) {
+          updates.push({ ...item, rootName: matchedRootName })
+        }
+      }
+      if (cancelled || updates.length === 0) return
+
+      const db = dbRef.current
+      if (db) {
+        await Promise.all(updates.map((entry) => dbPut(db, PANORAMAS_STORE, entry).catch(() => null)))
+      }
+      if (cancelled) return
+      const updateById = new Map(updates.map((entry) => [entry.id, entry]))
+      setHistoryItems((prev) => prev.map((entry) => updateById.get(entry.id) || entry))
+    }
+
+    backfillRootNames()
+    return () => {
+      cancelled = true
+    }
+  }, [historyItems.length])
+
   const filteredHomeItems = useMemo(
     () => {
       const filtered = historyItems.filter((item) => {
         const projectionOk = homeProjectionFilter === 'all' || item.projection === homeProjectionFilter
         const deviceOk = homeDeviceFilter === 'all' || item.device === homeDeviceFilter
-        return projectionOk && deviceOk
+        const folderOk = (() => {
+          if (!homeFolderFilter) return true
+          const itemRoot = String(item?.rootName || '').trim() || '(unknown root)'
+          if (itemRoot !== homeFolderFilter.rootName) return false
+          if (!homeFolderFilter.folderPath) return true
+          const parts = splitRelativePath(item?.relativePath || '')
+          const itemFolderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : ''
+          return itemFolderPath === homeFolderFilter.folderPath || itemFolderPath.startsWith(`${homeFolderFilter.folderPath}/`)
+        })()
+        return projectionOk && deviceOk && folderOk
       })
       return [...filtered].sort((a, b) =>
         homeSortOrder === 'asc' ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
       )
     },
-    [historyItems, homeProjectionFilter, homeDeviceFilter, homeSortOrder],
+    [historyItems, homeProjectionFilter, homeDeviceFilter, homeSortOrder, homeFolderFilter],
   )
   const activeHomeIndex = useMemo(
     () => filteredHomeItems.findIndex((item) => item.id === activeHistoryId),
@@ -1891,6 +3052,12 @@ function App() {
     activeHomeIndex >= 0 && activeHomeIndex < filteredHomeItems.length - 1 ? filteredHomeItems[activeHomeIndex + 1] : null
   const selectedHomeIdSet = useMemo(() => new Set(selectedHomeIds), [selectedHomeIds])
   const hasHomeSelection = selectedHomeIds.length > 0
+  const activeHomeFolderFilterLabel = useMemo(() => {
+    if (!homeFolderFilter) return ''
+    const rootName = String(homeFolderFilter.rootName || '(unknown root)')
+    const folderPath = String(homeFolderFilter.folderPath || '')
+    return folderPath ? `${rootName}/${folderPath}` : rootName
+  }, [homeFolderFilter])
 
   const estimatedDbBytes = useMemo(() => {
     try {
@@ -1970,6 +3137,7 @@ function App() {
       dateKey: item.dateKey || getDateGroupingKey(createdAt),
       device: item.device ? String(item.device) : 'Nieznane urzadzenie',
       relativePath: normalizeRelativePath(item.relativePath ? String(item.relativePath) : ''),
+      rootName: item.rootName ? String(item.rootName) : '',
       thumbDataUrl: item.thumbDataUrl ? String(item.thumbDataUrl) : '',
     }
   }
@@ -2209,61 +3377,39 @@ function App() {
     if (files.length === 0) return
 
     try {
-      setBusyText('Scanning panorama folder...')
-      setIsBusy(true)
-      await new Promise((resolve) => requestAnimationFrame(resolve))
-
-      let added = 0
-      let duplicates = 0
-      let tooLarge = 0
-      for (const file of files) {
-        try {
-          const result = await ingestFileToHistory(file, { relativePath: file.webkitRelativePath || '' })
-          if (result === 'added') added += 1
-          if (result === 'duplicate') duplicates += 1
-          if (result === 'too-large') tooLarge += 1
-        } catch {
-          // skip unreadable files
-        }
+      const fileItems = files.map((file) => {
+        const rel = file.webkitRelativePath || ''
+        const rootName = rel.split('/').filter(Boolean)[0] || ''
+        return { file, relativePath: rel, rootName }
+      })
+      const { added, duplicates, tooLarge, canceled } = await scanFilesWithWorker(fileItems, 'Scanning folder')
+      if (!canceled) {
+        setStatus(
+          `Folder scan complete. Added ${added}, duplicates: ${duplicates}, skipped >100MB: ${tooLarge}, total files: ${files.length}.`,
+        )
       }
-      setStatus(
-        `Folder scan complete. Added ${added}, duplicates: ${duplicates}, skipped >100MB: ${tooLarge}, total files: ${files.length}.`,
-      )
     } finally {
-      setIsBusy(false)
       event.target.value = ''
     }
   }
 
-  const scanDirectoryHandle = async (dirHandle, pathPrefix = '') => {
-    let added = 0
-    let duplicates = 0
-    let tooLarge = 0
-    let checked = 0
-
+  const collectFilesFromDirectoryHandle = async (dirHandle, pathPrefix = '', rootName = '') => {
+    const collected = []
     // eslint-disable-next-line no-restricted-syntax
     for await (const [name, handle] of dirHandle.entries()) {
       if (handle.kind === 'directory') {
-        const nested = await scanDirectoryHandle(handle, `${pathPrefix}${name}/`)
-        added += nested.added
-        duplicates += nested.duplicates
-        tooLarge += nested.tooLarge
-        checked += nested.checked
+        const nested = await collectFilesFromDirectoryHandle(handle, `${pathPrefix}${name}/`, rootName)
+        collected.push(...nested)
       } else if (handle.kind === 'file') {
-        checked += 1
         try {
           const file = await handle.getFile()
-          const result = await ingestFileToHistory(file, { relativePath: `${pathPrefix}${name}` })
-          if (result === 'added') added += 1
-          if (result === 'duplicate') duplicates += 1
-          if (result === 'too-large') tooLarge += 1
+          collected.push({ file, relativePath: `${pathPrefix}${name}`, rootName })
         } catch {
-          // skip files that cannot be read
+          // skip unreadable files
         }
       }
     }
-
-    return { added, duplicates, tooLarge, checked }
+    return collected
   }
 
   const pickFolderWithFsApi = async (options = {}) => {
@@ -2281,45 +3427,49 @@ function App() {
       // @ts-ignore
       const dirHandle = await window.showDirectoryPicker()
       const granted = await ensureReadPermission(dirHandle)
-      setHasFolderAccess(granted)
       if (!granted) {
+        setHasFolderAccess(false)
         setStatus('Folder access was not granted.')
         return
       }
 
-      rootDirHandleRef.current = dirHandle
-      if (dbRef.current) {
-        await dbPut(dbRef.current, SETTINGS_STORE, { key: ROOT_HANDLE_KEY, value: dirHandle })
-      }
+      const { added, handles } = await addConnectedRootHandle(dirHandle)
+      setHasFolderAccess(true)
 
       if (!scanAfterPick) {
-        setStatus('Folder connected. Library was loaded from backup without scanning.')
+        setStatus(
+          added
+            ? `Folder added (${handles.length} connected). Library was loaded from backup without scanning.`
+            : `Folder already connected (${handles.length} connected).`,
+        )
         return
       }
 
-      setBusyText('Scanning panorama folder...')
-      setIsBusy(true)
-      await new Promise((resolve) => requestAnimationFrame(resolve))
-      const { added, duplicates, tooLarge, checked } = await scanDirectoryHandle(dirHandle)
-      setStatus(
-        `Folder scan complete. Added ${added}, duplicates: ${duplicates}, skipped >100MB: ${tooLarge}, checked files: ${checked}.`,
-      )
+      const fileItems = await collectFilesFromDirectoryHandle(dirHandle, '', dirHandle?.name || '')
+      const { added: addedFromScan, duplicates, tooLarge, checked, canceled } = await scanFilesWithWorker(fileItems, 'Scanning folder')
+      if (!canceled) {
+        setStatus(
+          `Folder scan complete. Added ${addedFromScan}, duplicates: ${duplicates}, skipped >100MB: ${tooLarge}, checked files: ${checked}. Connected folders: ${handles.length}.`,
+        )
+      }
     } catch {
       setStatus('Folder selection was canceled or not supported by browser.')
-    } finally {
-      setIsBusy(false)
     }
   }
 
   const refreshFolderAccess = async () => {
-    const root = rootDirHandleRef.current
-    if (!root) {
+    const connected = getConnectedRootHandles()
+    if (connected.length === 0) {
       await pickFolderWithFsApi({ scanAfterPick: false })
       return
     }
-    const granted = await ensureReadPermission(root)
-    setHasFolderAccess(granted)
-    setStatus(granted ? 'Folder access refreshed.' : 'Could not refresh folder access.')
+    const accessible = await getAccessibleRootHandles(true)
+    setHasFolderAccess(accessible.length > 0)
+    setStatus(
+      accessible.length > 0
+        ? `Folder access refreshed (${accessible.length}/${connected.length}).`
+        : 'Could not refresh folder access.',
+    )
   }
 
   const importBackup = async () => {
@@ -2397,22 +3547,29 @@ function App() {
       return
     }
 
-    const root = rootDirHandleRef.current
-    if (!root) {
+    const connectedRoots = getConnectedRootHandles()
+    if (connectedRoots.length === 0) {
       setStatus('No folder connected. Click "Select folder".')
       return
     }
 
-    const granted = await ensureReadPermission(root)
-    setHasFolderAccess(granted)
-    if (!granted) {
+    const accessibleRoots = await getAccessibleRootHandles(true)
+    setHasFolderAccess(accessibleRoots.length > 0)
+    if (accessibleRoots.length === 0) {
       setStatus('No folder permission. Use "Refresh access".')
       return
     }
 
     try {
-      const dir = await getDirectoryFromRelativePath(root, item.relativePath)
-      const startIn = dir || root
+      let startIn = accessibleRoots[0]
+      for (const rootHandle of accessibleRoots) {
+        // eslint-disable-next-line no-await-in-loop
+        const dir = await getDirectoryFromRelativePath(rootHandle, item.relativePath)
+        if (dir) {
+          startIn = dir
+          break
+        }
+      }
       if (canUseOpenFilePicker) {
         await window.showOpenFilePicker({
           multiple: false,
@@ -2438,6 +3595,7 @@ function App() {
   const selectedContextItem = contextMenu.itemId
     ? historyItems.find((item) => item.id === contextMenu.itemId) || null
     : null
+  const connectedRootCount = getConnectedRootHandles().length
   const activeContextItem = useMemo(() => {
     if (selectedContextItem) return selectedContextItem
     if (!hasActivePanorama || !activeHistoryId) return null
@@ -2512,6 +3670,93 @@ function App() {
     })
   }, [historyItems])
   const canInstallApp = Boolean(installPromptEvent) && !isInstalled
+  const collapseAllFolderNodes = () => {
+    const next = {}
+    const walk = (nodes) => {
+      for (const node of nodes || []) {
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          next[node.key] = true
+          walk(node.children)
+        }
+      }
+    }
+    walk(panelFolderTree)
+    setCollapsedFolderNodes(next)
+  }
+  const expandAllFolderNodes = () => {
+    const next = {}
+    const walk = (nodes) => {
+      for (const node of nodes || []) {
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          next[node.key] = false
+          walk(node.children)
+        }
+      }
+    }
+    walk(panelFolderTree)
+    setCollapsedFolderNodes(next)
+  }
+  const toggleFolderNode = (nodeKey, depth) => {
+    if (!nodeKey) return
+    setCollapsedFolderNodes((prev) => {
+      const defaultCollapsed = depth > 0
+      const isCollapsed = prev[nodeKey] ?? defaultCollapsed
+      return {
+        ...prev,
+        [nodeKey]: !isCollapsed,
+      }
+    })
+  }
+  const selectFolderForHome = (node) => {
+    if (!node) return
+    const rootName = String(node.rootName || node.name || '(unknown root)')
+    const folderPath = node.isRoot ? '' : node.fullPath
+    setHomeFolderFilter((prev) => {
+      if (prev && prev.rootName === rootName && prev.folderPath === folderPath) {
+        return null
+      }
+      return { rootName, folderPath }
+    })
+    if (hasActivePanorama) {
+      closePanoramaToHome()
+    }
+  }
+  const renderFolderTreeNodes = (nodes, depth = 0) =>
+    nodes.map((node) => {
+      const hasChildren = Array.isArray(node.children) && node.children.length > 0
+      const defaultCollapsed = depth > 0
+      const isCollapsed = hasChildren ? collapsedFolderNodes[node.key] ?? defaultCollapsed : false
+      const rootName = String(node.rootName || node.name || '(unknown root)')
+      const folderPath = node.isRoot ? '' : node.fullPath
+      const isSelected = Boolean(homeFolderFilter && homeFolderFilter.rootName === rootName && homeFolderFilter.folderPath === folderPath)
+      return (
+        <div key={node.key} className="panel-folder-node">
+          <button
+            type="button"
+            className={`panel-folder-row ${hasChildren ? 'is-expandable' : 'is-leaf'} ${isSelected ? 'is-selected' : ''}`}
+            style={{ paddingLeft: `${10 + depth * 14}px` }}
+            title={node.fullPath}
+            onClick={() => {
+              selectFolderForHome(node)
+            }}
+          >
+            <span
+              className="panel-folder-chevron"
+              onClick={(event) => {
+                event.stopPropagation()
+                if (!hasChildren) return
+                toggleFolderNode(node.key, depth)
+              }}
+            >
+              {hasChildren ? (isCollapsed ? '+' : '-') : ''}
+            </span>
+            <span className="panel-folder-name">{node.name}</span>
+            <span className="panel-folder-count">{node.count}</span>
+          </button>
+          {hasChildren && !isCollapsed && <div>{renderFolderTreeNodes(node.children, depth + 1)}</div>}
+        </div>
+      )
+    })
 
   return (
     <div
@@ -2602,9 +3847,22 @@ function App() {
       </div>
       <p className="status">
         <span className="status-main">{status}</span>
+        {isScanInProgress && (
+          <button type="button" className="status-cancel-btn" onClick={cancelScan}>
+            {t('strings.cancelScan')}
+          </button>
+        )}
         <span className="status-side" aria-label="Library stats">
-          {t('strings.countPanoramas')}: <strong>{historyItems.length}</strong> | {t('strings.dbSize')}:{' '}
-          <strong>{formatBytes(displayedDbBytes)}</strong>
+          {t('strings.countPanoramas')}: <strong>{historyItems.length}</strong> | {t('strings.connectedFolders')}:{' '}
+          <strong>{connectedRootCount}</strong> | {t('strings.dbSize')}: <strong>{formatBytes(displayedDbBytes)}</strong>
+          {homeFolderFilter && (
+            <>
+              {' '}| Filter:{' '}
+              <button type="button" className="status-filter-pill" onClick={() => setHomeFolderFilter(null)}>
+                {activeHomeFolderFilterLabel} x
+              </button>
+            </>
+          )}
         </span>
       </p>
       <div className="viewer-wrap">
@@ -2754,40 +4012,50 @@ function App() {
           <div className="side-panel-content" onContextMenu={(event) => openContextMenu(event, null, 'panel')}>
             <h3>Panorama library</h3>
             <div className="history-list">
-              {filteredGroupedHistory.length === 0 && <p className="history-empty">No panoramas for active filter.</p>}
-              {filteredGroupedHistory.map((group) => (
-                <section key={group.key} className="history-group">
-                  <button type="button" className="history-date-btn" onClick={() => toggleHistoryGroup(group.key)}>
-                    <span>{group.label}</span>
-                    <span className="history-date-count">
-                      {collapsedGroups[group.key] ? '+' : '-'} {group.items.length}
-                    </span>
-                  </button>
-                  {!collapsedGroups[group.key] &&
-                    group.items.map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={`history-item history-item-${panelTileSize}`}
-                        onClick={() => openPanoramaFromLibrary(item)}
-                        onContextMenu={(event) => openContextMenu(event, item.id)}
-                        title={`${item.name} (${item.width}x${item.height})`}
-                      >
-                        {item.thumbDataUrl ? (
-                          <img src={item.thumbDataUrl} alt={item.name} className="history-thumb" />
-                        ) : (
-                          <div className="history-thumb history-thumb-placeholder" />
-                        )}
-                        <div className="history-meta">
-                          <span className="history-name">{item.name}</span>
-                          <span className="history-sub">
-                            {item.width}x{item.height} | {projectionLabels[item.projection]}
-                          </span>
-                        </div>
+              {panelContentMode === 'panoramas' && (
+                <>
+                  {filteredGroupedHistory.length === 0 && <p className="history-empty">No panoramas for active filter.</p>}
+                  {filteredGroupedHistory.map((group) => (
+                    <section key={group.key} className="history-group">
+                      <button type="button" className="history-date-btn" onClick={() => toggleHistoryGroup(group.key)}>
+                        <span>{group.label}</span>
+                        <span className="history-date-count">
+                          {collapsedGroups[group.key] ? '+' : '-'} {group.items.length}
+                        </span>
                       </button>
-                    ))}
-                </section>
-              ))}
+                      {!collapsedGroups[group.key] &&
+                        group.items.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={`history-item history-item-${panelTileSize}`}
+                            onClick={() => openPanoramaFromLibrary(item)}
+                            onContextMenu={(event) => openContextMenu(event, item.id)}
+                            title={`${item.name} (${item.width}x${item.height})`}
+                          >
+                            {item.thumbDataUrl ? (
+                              <img src={item.thumbDataUrl} alt={item.name} className="history-thumb" />
+                            ) : (
+                              <div className="history-thumb history-thumb-placeholder" />
+                            )}
+                            <div className="history-meta">
+                              <span className="history-name">{item.name}</span>
+                              <span className="history-sub">
+                                {item.width}x{item.height} | {projectionLabels[item.projection]}
+                              </span>
+                            </div>
+                          </button>
+                        ))}
+                    </section>
+                  ))}
+                </>
+              )}
+              {panelContentMode === 'folders' && (
+                <>
+                  {panelFolderTree.length === 0 && <p className="history-empty">No folders for active filter.</p>}
+                  {panelFolderTree.length > 0 && <div className="panel-folder-tree">{renderFolderTreeNodes(panelFolderTree)}</div>}
+                </>
+              )}
             </div>
             <div className="history-actions">
               <button type="button" className="folder-btn" onClick={pickFolderWithFsApi}>
@@ -2890,6 +4158,32 @@ function App() {
               ))}
             </div>
           </div>
+          {contextMenu.scope === 'panel' && (
+            <>
+              <button
+                type="button"
+                className={`context-menu-item ${panelContentMode === 'panoramas' ? 'active' : ''}`}
+                onClick={() => {
+                  setPanelContentMode('panoramas')
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-expand" />
+                <span>{t('strings.showPanoramas')}</span>
+              </button>
+              <button
+                type="button"
+                className={`context-menu-item ${panelContentMode === 'folders' ? 'active' : ''}`}
+                onClick={() => {
+                  setPanelContentMode('folders')
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-folder" />
+                <span>{t('strings.showFolders')}</span>
+              </button>
+            </>
+          )}
           {contextMenu.scope === 'panel' && (
             <div className="context-menu-submenu">
               <button type="button" className="context-menu-item submenu-trigger">
@@ -3002,7 +4296,7 @@ function App() {
             </div>
           </div>
           <div className="context-sep" />
-          {contextMenu.scope === 'panel' && (
+          {contextMenu.scope === 'panel' && panelContentMode === 'panoramas' && (
             <>
               <button
                 type="button"
@@ -3025,6 +4319,33 @@ function App() {
               >
                 <span className="cm-icon cm-expand" />
                 <span>Expand all dates</span>
+              </button>
+              <div className="context-sep" />
+            </>
+          )}
+          {contextMenu.scope === 'panel' && panelContentMode === 'folders' && (
+            <>
+              <button
+                type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  collapseAllFolderNodes()
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-collapse" />
+                <span>{t('strings.collapseAllFolders')}</span>
+              </button>
+              <button
+                type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  expandAllFolderNodes()
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-expand" />
+                <span>{t('strings.expandAllFolders')}</span>
               </button>
               <div className="context-sep" />
             </>
@@ -3080,6 +4401,17 @@ function App() {
               </button>
               <button
                 type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  repairLibraryLinks()
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-folder" />
+                <span>{t('strings.repairLibraryLinks')}</span>
+              </button>
+              <button
+                type="button"
                 className={`context-menu-item ${showLocationPanel ? 'active' : ''}`}
                 onClick={() => {
                   setShowLocationPanel((prev) => !prev)
@@ -3100,6 +4432,19 @@ function App() {
                 <span className="cm-icon cm-map" />
                 <span>{showGpsMapOverlay ? t('strings.hideGpsMap') : t('strings.showGpsMap')}</span>
               </button>
+              {homeFolderFilter && (
+                <button
+                  type="button"
+                  className="context-menu-item"
+                  onClick={() => {
+                    setHomeFolderFilter(null)
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span className="cm-icon cm-clear" />
+                  <span>{t('strings.clearFolderFilter')}</span>
+                </button>
+              )}
               {hasHomeSelection && (
                 <>
                   <button
@@ -3162,17 +4507,19 @@ function App() {
             </>
           )}
           {contextMenu.scope === 'home' && (
-            <button
-              type="button"
-              className="context-menu-item danger"
-              onClick={() => {
-                openClearConfirmModal()
-                closeContextMenuAfterMenuAction()
-              }}
-            >
-              <span className="cm-icon cm-clear" />
-              <span>{t('strings.clearLibrary')}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                className="context-menu-item danger"
+                onClick={() => {
+                  openClearConfirmModal()
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-clear" />
+                <span>{t('strings.clearLibrary')}</span>
+              </button>
+            </>
           )}
         </div>
       )}
