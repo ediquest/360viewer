@@ -1,5 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="108" fill="#0f172a"/>
-  <circle cx="256" cy="256" r="170" fill="none" stroke="#67e8f9" stroke-width="22"/>
-  <path d="M256 106v300M106 256h300" stroke="#67e8f9" stroke-width="18" stroke-linecap="round"/>
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Globus z pinezka">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#08122b"/>
+      <stop offset="58%" stop-color="#0c4a6e"/>
+      <stop offset="100%" stop-color="#061a35"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="url(#bg)"/>
+  <g transform="translate(22,18)">
+    <circle cx="232" cy="244" r="146" fill="none" stroke="#67e8f9" stroke-width="16"/>
+    <ellipse cx="232" cy="244" rx="146" ry="98" fill="none" stroke="#38bdf8" stroke-width="8" opacity="0.85"/>
+    <ellipse cx="232" cy="244" rx="146" ry="52" fill="none" stroke="#38bdf8" stroke-width="8" opacity="0.85"/>
+    <ellipse cx="232" cy="244" rx="104" ry="146" fill="none" stroke="#38bdf8" stroke-width="8" opacity="0.85"/>
+    <ellipse cx="232" cy="244" rx="54" ry="146" fill="none" stroke="#38bdf8" stroke-width="8" opacity="0.85"/>
+  </g>
+  <g transform="translate(0,-4)">
+    <path d="M344 142c-39.8 0-72 32.2-72 72 0 20.6 8.7 39.2 22.6 52.3L344 332l49.4-65.7c13.9-13.1 22.6-31.7 22.6-52.3 0-39.8-32.2-72-72-72z" fill="#38bdf8"/>
+    <circle cx="344" cy="214" r="30" fill="#08172e"/>
+    <circle cx="344" cy="214" r="70" fill="none" stroke="#a5f3fc" stroke-width="6" opacity="0.95"/>
+  </g>
 </svg>
