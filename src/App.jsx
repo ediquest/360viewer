@@ -2639,6 +2639,8 @@ function App() {
     setHistoryItems([])
     setSelectedHomeIds([])
     setCollapsedGroups({})
+    setCollapsedFolderNodes({})
+    setHomeFolderFilter(null)
     setDeleteTarget(null)
     setIsDeleteSelectedConfirmOpen(false)
     setClearConfirmChecked(false)
@@ -2894,7 +2896,6 @@ function App() {
   }, [panelFilteredItems])
 
   const panelFolderTree = useMemo(() => {
-    const connectedRoots = getConnectedRootHandles().map((handle) => handle?.name || '').filter(Boolean)
     const topRootMap = new Map()
     const ensureTopRoot = (rootName) => {
       const key = rootName || '(unknown root)'
@@ -2911,10 +2912,6 @@ function App() {
       }
       topRootMap.set(key, rootNode)
       return rootNode
-    }
-
-    for (const rootName of connectedRoots) {
-      ensureTopRoot(rootName)
     }
 
     const childMapByRoot = new Map()
@@ -3852,17 +3849,19 @@ function App() {
             {t('strings.cancelScan')}
           </button>
         )}
-        <span className="status-side" aria-label="Library stats">
-          {t('strings.countPanoramas')}: <strong>{historyItems.length}</strong> | {t('strings.connectedFolders')}:{' '}
-          <strong>{connectedRootCount}</strong> | {t('strings.dbSize')}: <strong>{formatBytes(displayedDbBytes)}</strong>
+        <span className="status-side-group">
           {homeFolderFilter && (
-            <>
-              {' '}| Filter:{' '}
+            <span className="status-filter-wrap">
+              <span>Filter:</span>
               <button type="button" className="status-filter-pill" onClick={() => setHomeFolderFilter(null)}>
                 {activeHomeFolderFilterLabel} x
               </button>
-            </>
+            </span>
           )}
+          <span className="status-side" aria-label="Library stats">
+            {t('strings.countPanoramas')}: <strong>{historyItems.length}</strong> | {t('strings.connectedFolders')}:{' '}
+            <strong>{connectedRootCount}</strong> | {t('strings.dbSize')}: <strong>{formatBytes(displayedDbBytes)}</strong>
+          </span>
         </span>
       </p>
       <div className="viewer-wrap">

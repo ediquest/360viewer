@@ -218,6 +218,20 @@ select {
   white-space: nowrap;
   margin-right: 48px;
 }
+.status-side-group {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+.status-filter-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #94a3b8;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
 
 .status-side strong {
   color: #e2e8f0;
