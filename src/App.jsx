@@ -21,33 +21,125 @@ const QUALITY_MODES = {
   q2048: 2048,
 }
 
-const QUALITY_LABELS = {
-  auto: 'Auto (GPU max)',
-  max: 'Maks (GPU)',
-  q8192: '8192',
-  q4096: '4096',
-  q2048: '2048',
+const I18N = {
+  en: {
+    qualityLabels: {
+      auto: 'Auto (GPU max)',
+      max: 'Max (GPU)',
+      q8192: '8192',
+      q4096: '4096',
+      q2048: '2048',
+    },
+    projectionLabels: {
+      auto: 'Auto',
+      spherical: 'Spherical',
+      cylindrical: 'Cylindrical',
+    },
+    exifTabs: {
+      all: 'All',
+      basic: 'Basic',
+      camera: 'Camera',
+      capture: 'Exposure & date',
+      gps: 'GPS',
+      panorama: 'Panorama',
+      other: 'Other',
+    },
+    strings: {
+      initialStatus: 'Drag and drop a 2:1 panorama or click to choose a file.',
+      loading: 'Loading...',
+      appInstalled: 'App has been installed.',
+      initialStatusWithGpu: 'Drag and drop a 2:1 panorama or click to choose a file. GPU limit: {gpu}.',
+      toolbarProjection: 'Projection:',
+      toolbarLockVertical: 'Lock vertical (cyl.):',
+      toolbarQuality: 'Quality:',
+      toolbarFlip: 'Flip horizontally:',
+      toolbarTelemetry: 'Show telemetry:',
+      install: 'Install',
+      openImage: 'Choose image',
+      showExif: 'Show EXIF',
+      showOnDisk: 'Show on disk',
+      backupImportExport: 'Backup import/export',
+      removeFromLibrary: 'Remove from library',
+      removeSelectedFromLibrary: 'Remove selected from library',
+      deselectAll: 'Deselect all',
+      clearLibrary: 'Clear library',
+      hideLocationPanel: 'Hide location panel',
+      showLocationPanel: 'Show location panel',
+      hideGpsMap: 'Hide GPS mini-map',
+      showGpsMap: 'Show GPS mini-map',
+      locationResolving: 'Resolving location...',
+      unknownProjection: 'Unknown',
+      telemetryProjection: 'Proj',
+      countPanoramas: 'Panoramas',
+      dbSize: 'DB size',
+    },
+  },
+  pl: {
+    qualityLabels: {
+      auto: 'Auto (GPU max)',
+      max: 'Maks (GPU)',
+      q8192: '8192',
+      q4096: '4096',
+      q2048: '2048',
+    },
+    projectionLabels: {
+      auto: 'Auto',
+      spherical: 'Sferyczna',
+      cylindrical: 'Cylindryczna',
+    },
+    exifTabs: {
+      all: 'Wszystkie',
+      basic: 'Podstawowe',
+      camera: 'Aparat',
+      capture: 'Ekspozycja i data',
+      gps: 'GPS',
+      panorama: 'Panorama',
+      other: 'Pozostale',
+    },
+    strings: {
+      initialStatus: 'Przeciagnij panorame 2:1 lub kliknij, aby wybrac plik.',
+      loading: 'Ladowanie...',
+      appInstalled: 'Aplikacja zostala zainstalowana.',
+      initialStatusWithGpu: 'Przeciagnij panorame 2:1 lub kliknij, aby wybrac plik. Limit GPU: {gpu}.',
+      toolbarProjection: 'Projekcja:',
+      toolbarLockVertical: 'Blokuj pion (cyl.):',
+      toolbarQuality: 'Jakosc:',
+      toolbarFlip: 'Odwroc poziomo:',
+      toolbarTelemetry: 'Pokaz telemetry:',
+      install: 'Zainstaluj',
+      openImage: 'Wybierz obraz',
+      showExif: 'Pokaz EXIF',
+      showOnDisk: 'Pokaz na dysku',
+      backupImportExport: 'Backup import/eksport',
+      removeFromLibrary: 'Usun z biblioteki',
+      removeSelectedFromLibrary: 'Usun zaznaczone z biblioteki',
+      deselectAll: 'Odznacz wszystkie',
+      clearLibrary: 'Wyczysc biblioteke',
+      hideLocationPanel: 'Ukryj panel lokalizacji',
+      showLocationPanel: 'Pokaz panel lokalizacji',
+      hideGpsMap: 'Ukryj mapke GPS',
+      showGpsMap: 'Pokaz mapke GPS',
+      locationResolving: 'Ustalanie miejscowosci...',
+      unknownProjection: 'Nieznany',
+      telemetryProjection: 'Proj',
+      countPanoramas: 'Panoramy',
+      dbSize: 'Rozmiar bazy',
+    },
+  },
 }
 
-const PROJECTION_LABELS = {
-  auto: 'Auto',
-  spherical: 'Sferyczna',
-  cylindrical: 'Cylindryczna',
+const getI18nValue = (obj, path) => {
+  const segments = path.split('.')
+  let current = obj
+  for (const segment of segments) {
+    if (!current || typeof current !== 'object') return undefined
+    current = current[segment]
+  }
+  return current
 }
 
-const PROJECTION_OPTIONS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'spherical', label: 'Sferyczna' },
-  { value: 'cylindrical', label: 'Cylindryczna' },
-]
-
-const QUALITY_OPTIONS = [
-  { value: 'auto', label: 'Auto (GPU max)' },
-  { value: 'max', label: 'Maks (GPU)' },
-  { value: 'q8192', label: '8192' },
-  { value: 'q4096', label: '4096' },
-  { value: 'q2048', label: '2048' },
-]
+const interpolate = (template, vars = {}) =>
+  String(template).replace(/\{(\w+)\}/g, (_, key) => (vars[key] == null ? '' : String(vars[key])))
 
 const SPHERICAL_DEFAULT_FOV = 80
 const SPHERICAL_MIN_FOV = 30
@@ -57,15 +149,6 @@ const CYLINDRICAL_DEFAULT_FOV = 54
 const CYLINDRICAL_MIN_FOV = 45
 const CYLINDRICAL_MAX_FOV = 140
 const EXIF_TAB_ORDER = ['basic', 'camera', 'capture', 'gps', 'panorama', 'other', 'all']
-const EXIF_TAB_LABELS = {
-  all: 'Wszystkie',
-  basic: 'Podstawowe',
-  camera: 'Aparat',
-  capture: 'Ekspozycja i data',
-  gps: 'GPS',
-  panorama: 'Panorama',
-  other: 'Pozostale',
-}
 
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes) || bytes < 0) return '-'
@@ -356,6 +439,7 @@ function App() {
   const contextMenuRef = useRef(null)
   const localityCacheRef = useRef(new Map())
   const dragDepthRef = useRef(0)
+  const backupDragDepthRef = useRef(0)
   const homeScrollTopRef = useRef(0)
   const shouldRestoreHomeScrollRef = useRef(false)
 
@@ -369,7 +453,8 @@ function App() {
     lat: 0,
   })
 
-  const [status, setStatus] = useState('Przeciagnij panorame 2:1 lub kliknij, aby wybrac plik.')
+  const [language, setLanguage] = useState('en')
+  const [status, setStatus] = useState('Drag and drop a 2:1 panorama or click to pick a file.')
   const [isDragging, setIsDragging] = useState(false)
   const [qualityMode, setQualityMode] = useState('auto')
   const [projectionMode, setProjectionMode] = useState('auto')
@@ -382,7 +467,7 @@ function App() {
   const [exifError, setExifError] = useState('')
   const [exifTab, setExifTab] = useState('all')
   const [isBusy, setIsBusy] = useState(false)
-  const [busyText, setBusyText] = useState('Ladowanie...')
+  const [busyText, setBusyText] = useState('Loading...')
   const [showTelemetry, setShowTelemetry] = useState(true)
   const [showLocationPanel, setShowLocationPanel] = useState(true)
   const [showGpsMapOverlay, setShowGpsMapOverlay] = useState(true)
@@ -400,11 +485,13 @@ function App() {
   const [panelDeviceFilter, setPanelDeviceFilter] = useState('all')
   const [panelSortOrder, setPanelSortOrder] = useState('desc')
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [isDeleteSelectedConfirmOpen, setIsDeleteSelectedConfirmOpen] = useState(false)
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
   const [clearConfirmChecked, setClearConfirmChecked] = useState(false)
   const [indexedDbBytes, setIndexedDbBytes] = useState(null)
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false)
   const [backupFile, setBackupFile] = useState(null)
+  const [isBackupDragging, setIsBackupDragging] = useState(false)
   const [importClearBefore, setImportClearBefore] = useState(false)
   const [importLinkFolderAfter, setImportLinkFolderAfter] = useState(true)
   const [importScanAfterLink, setImportScanAfterLink] = useState(false)
@@ -417,6 +504,7 @@ function App() {
     return Boolean(standalone || iosStandalone)
   })
   const [activeHistoryId, setActiveHistoryId] = useState(null)
+  const [selectedHomeIds, setSelectedHomeIds] = useState([])
   const [isPanelPinnedOpen, setIsPanelPinnedOpen] = useState(false)
   const [activeCapturedAt, setActiveCapturedAt] = useState(null)
   const [resolvedLocality, setResolvedLocality] = useState('')
@@ -429,6 +517,33 @@ function App() {
     submenuSide: 'right',
     scope: 'panel',
   })
+
+  const dict = I18N[language] || I18N.en
+  const qualityLabels = dict.qualityLabels
+  const projectionLabels = dict.projectionLabels
+  const exifTabLabels = dict.exifTabs
+  const t = (key, vars = {}) => {
+    const template = getI18nValue(dict, key) ?? getI18nValue(I18N.en, key) ?? key
+    return interpolate(template, vars)
+  }
+  const projectionOptions = useMemo(
+    () => [
+      { value: 'auto', label: projectionLabels.auto },
+      { value: 'spherical', label: projectionLabels.spherical },
+      { value: 'cylindrical', label: projectionLabels.cylindrical },
+    ],
+    [projectionLabels],
+  )
+  const qualityOptions = useMemo(
+    () => [
+      { value: 'auto', label: qualityLabels.auto },
+      { value: 'max', label: qualityLabels.max },
+      { value: 'q8192', label: qualityLabels.q8192 },
+      { value: 'q4096', label: qualityLabels.q4096 },
+      { value: 'q2048', label: qualityLabels.q2048 },
+    ],
+    [qualityLabels],
+  )
 
   useEffect(() => {
     if (!folderInputRef.current) return
@@ -452,7 +567,7 @@ function App() {
     const onInstalled = () => {
       setIsInstalled(true)
       setInstallPromptEvent(null)
-      setStatus('Aplikacja zostala zainstalowana.')
+      setStatus(t('strings.appInstalled'))
     }
 
     window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
@@ -488,7 +603,7 @@ function App() {
     sceneRef.current = scene
     cameraRef.current = camera
     maxTextureSizeRef.current = renderer.capabilities.maxTextureSize || 4096
-    setStatus(`Przeciagnij panorame 2:1 lub kliknij, aby wybrac plik. Limit GPU: ${maxTextureSizeRef.current}.`)
+    setStatus(t('strings.initialStatusWithGpu', { gpu: maxTextureSizeRef.current }))
 
     const initialGeometry = new THREE.SphereGeometry(500, 60, 40)
     const initialMaterial = new THREE.MeshBasicMaterial({
@@ -640,6 +755,7 @@ function App() {
 
         if (savedSettings?.value) {
           const s = savedSettings.value
+          if (s.language === 'pl' || s.language === 'en') setLanguage(s.language)
           if (s.qualityMode) setQualityMode(s.qualityMode)
           if (s.projectionMode) setProjectionMode(s.projectionMode)
           if (typeof s.lockVertical === 'boolean') setLockVertical(s.lockVertical)
@@ -733,6 +849,7 @@ function App() {
     const db = dbRef.current
     if (!db) return
     const value = {
+      language,
       qualityMode,
       projectionMode,
       lockVertical,
@@ -748,6 +865,7 @@ function App() {
     }
     dbPut(db, SETTINGS_STORE, { key: 'app', value }).catch(() => {})
   }, [
+    language,
     qualityMode,
     projectionMode,
     lockVertical,
@@ -1106,13 +1224,13 @@ function App() {
 
   const updateStatusAfterTexture = (name, width, height, drawWidth, drawHeight, requestedMax, projection) => {
     const wasScaled = drawWidth !== width
-    const modeLabel = QUALITY_LABELS[qualityMode] || qualityMode
+    const modeLabel = qualityLabels[qualityMode] || qualityMode
     const reqLabel = Number.isFinite(requestedMax) ? requestedMax : maxTextureSizeRef.current
-    const projectionLabel = PROJECTION_LABELS[projection || activeProjection]
+    const projectionLabel = projectionLabels[projection || activeProjection]
     setStatus(
       wasScaled
-        ? `Zaladowano: ${name} (${width}x${height}), wyswietlane: ${drawWidth}x${drawHeight}. Projekcja: ${projectionLabel}. Tryb jakosci: ${modeLabel}, limit trybu: ${reqLabel}, limit GPU: ${maxTextureSizeRef.current}.`
-        : `Zaladowano: ${name} (${width}x${height}) w pelnej rozdzielczosci. Projekcja: ${projectionLabel}. Tryb jakosci: ${modeLabel}, limit GPU: ${maxTextureSizeRef.current}.`,
+        ? `Loaded: ${name} (${width}x${height}), rendered: ${drawWidth}x${drawHeight}. Projection: ${projectionLabel}. Quality mode: ${modeLabel}, mode limit: ${reqLabel}, GPU limit: ${maxTextureSizeRef.current}.`
+        : `Loaded: ${name} (${width}x${height}) at full resolution. Projection: ${projectionLabel}. Quality mode: ${modeLabel}, GPU limit: ${maxTextureSizeRef.current}.`,
     )
   }
 
@@ -1228,10 +1346,10 @@ function App() {
   }
 
   const processPanoramaFile = async (file, options = {}) => {
-    const { persistHistory = true, forcedProjection = null, loadingText = 'Wczytywanie panoramy...' } = options
+    const { persistHistory = true, forcedProjection = null, loadingText = 'Loading panorama...' } = options
 
     if (!file || !file.type.startsWith('image/')) {
-      setStatus('To nie jest plik obrazu.')
+      setStatus('This is not an image file.')
       return
     }
 
@@ -1258,7 +1376,7 @@ function App() {
         })
         setExifData(parsed || {})
       } catch {
-        setExifError('Nie udalo sie odczytac EXIF.')
+        setExifError('Could not read EXIF.')
       } finally {
         setIsExifLoading(false)
       }
@@ -1268,14 +1386,14 @@ function App() {
 
       if (!isPanoramaCandidateWithMetadata(width, height, parsed)) {
         URL.revokeObjectURL(tmpUrl)
-        setStatus(`To nie wyglada na panorame: ${width}x${height} (min. proporcja ~${MIN_PANORAMA_RATIO}:1 lub metadane GPano).`)
+        setStatus(`This does not look like a panorama: ${width}x${height} (min ratio ~${MIN_PANORAMA_RATIO}:1 or GPano metadata).`)
         setIsBusy(false)
         return
       }
 
       if (resolvedProjection === 'spherical' && Math.abs(ratio - 2) > 0.15) {
         URL.revokeObjectURL(tmpUrl)
-        setStatus(`W trybie sferycznym wymagane proporcje bliskie 2:1. Otrzymano ${width}x${height}.`)
+        setStatus(`Spherical mode requires near 2:1 ratio. Received ${width}x${height}.`)
         setIsBusy(false)
         return
       }
@@ -1309,20 +1427,20 @@ function App() {
           relativePath: file.webkitRelativePath || '',
         })
         if (saveResult.reason === 'duplicate') {
-          setStatus((prev) => `${prev} (Juz jest w historii)`)
+          setStatus((prev) => `${prev} (Already in history)`)
         }
       }
 
     } catch {
       setIsExifLoading(false)
-      setStatus('Nie udalo sie wczytac obrazu.')
+      setStatus('Could not load image.')
     } finally {
       setIsBusy(false)
     }
   }
 
   const handleFile = async (file) => {
-    await processPanoramaFile(file, { persistHistory: true, loadingText: 'Wczytywanie panoramy...' })
+    await processPanoramaFile(file, { persistHistory: true, loadingText: 'Loading panorama...' })
   }
 
   const relinkHistoryItemFromPicker = async (item, rootHandle) => {
@@ -1345,7 +1463,7 @@ function App() {
       await processPanoramaFile(file, {
         persistHistory: false,
         forcedProjection: item.projection,
-        loadingText: 'Wczytywanie panoramy...',
+        loadingText: 'Loading panorama...',
       })
 
       let nextRelativePath = normalizeRelativePath(item.relativePath)
@@ -1379,14 +1497,14 @@ function App() {
     if (!item) return
     const root = rootDirHandleRef.current
     if (!root) {
-      setStatus('Brak podlaczonego folderu. Kliknij "Wybierz folder".')
+      setStatus('No folder connected. Click "Select folder".')
       return
     }
 
     const granted = await ensureReadPermission(root)
     setHasFolderAccess(granted)
     if (!granted) {
-      setStatus('Brak uprawnienia do folderu. Uzyj "Odswiez dostep".')
+      setStatus('No folder permission. Use "Refresh access".')
       return
     }
 
@@ -1408,7 +1526,7 @@ function App() {
     if (!item?.relativePath) {
       const relinked = await relinkHistoryItemFromPicker(item, root)
       if (!relinked) {
-        setStatus('Brak sciezki do pliku w historii. Wskaz plik panoramy recznie.')
+        setStatus('No file path in history. Pick panorama file manually.')
       }
       return
     }
@@ -1416,7 +1534,7 @@ function App() {
     try {
       const file = await getFileFromRelativePath(root, item.relativePath)
       if (!file) {
-        setBusyText('Szukam pliku w podfolderach...')
+        setBusyText('Searching subfolders...')
         setIsBusy(true)
         const found = await findFileByNameInTree(root, item.name)
         setIsBusy(false)
@@ -1425,38 +1543,82 @@ function App() {
           await processPanoramaFile(found.file, {
             persistHistory: false,
             forcedProjection: item.projection,
-            loadingText: 'Wczytywanie panoramy...',
+            loadingText: 'Loading panorama...',
           })
           return
         }
         const relinked = await relinkHistoryItemFromPicker(item, root)
         if (!relinked) {
-          setStatus('Nie znaleziono pliku na dysku. Wybierz poprawny folder z panoramami.')
+          setStatus('File not found on disk. Choose the correct panorama folder.')
         }
         return
       }
       await processPanoramaFile(file, {
         persistHistory: false,
         forcedProjection: item.projection,
-        loadingText: 'Wczytywanie panoramy...',
+        loadingText: 'Loading panorama...',
       })
     } catch {
       setIsBusy(false)
       const relinked = await relinkHistoryItemFromPicker(item, root)
       if (!relinked) {
-        setStatus('Nie znaleziono pliku na dysku. Wybierz poprawny folder z panoramami.')
+        setStatus('File not found on disk. Choose the correct panorama folder.')
+      }
+    }
+  }
+
+  const removeHistoryItems = async (itemIds) => {
+    const uniqueIds = Array.from(new Set((itemIds || []).filter(Boolean)))
+    if (uniqueIds.length === 0) return
+
+    const removeSet = new Set(uniqueIds)
+    const isRemovingActive = hasActivePanorama && activeHistoryId && removeSet.has(activeHistoryId)
+    let fallbackNextItem = null
+
+    if (isRemovingActive) {
+      const activeIndex = filteredHomeItems.findIndex((item) => item.id === activeHistoryId)
+      if (activeIndex >= 0) {
+        for (let i = activeIndex + 1; i < filteredHomeItems.length; i += 1) {
+          const candidate = filteredHomeItems[i]
+          if (!removeSet.has(candidate.id)) {
+            fallbackNextItem = candidate
+            break
+          }
+        }
+        if (!fallbackNextItem) {
+          for (let i = activeIndex - 1; i >= 0; i -= 1) {
+            const candidate = filteredHomeItems[i]
+            if (!removeSet.has(candidate.id)) {
+              fallbackNextItem = candidate
+              break
+            }
+          }
+        }
+      }
+    }
+
+    const db = dbRef.current
+    if (db) {
+      await Promise.all(uniqueIds.map((id) => dbDelete(db, PANORAMAS_STORE, id).catch(() => {})))
+    }
+
+    setHistoryItems((prev) => prev.filter((item) => !removeSet.has(item.id)))
+    setSelectedHomeIds((prev) => prev.filter((id) => !removeSet.has(id)))
+    setDeleteTarget(null)
+    setIsDeleteSelectedConfirmOpen(false)
+
+    if (isRemovingActive) {
+      if (fallbackNextItem) {
+        await openPanoramaFromLibrary(fallbackNextItem)
+      } else {
+        setActiveHistoryId(null)
+        closePanoramaToHome()
       }
     }
   }
 
   const removeHistoryItem = async (itemId) => {
-    if (!itemId) return
-    const db = dbRef.current
-    if (db) {
-      await dbDelete(db, PANORAMAS_STORE, itemId).catch(() => {})
-    }
-    setHistoryItems((prev) => prev.filter((item) => item.id !== itemId))
-    setDeleteTarget(null)
+    await removeHistoryItems([itemId])
   }
 
   const clearLibrary = async () => {
@@ -1465,11 +1627,13 @@ function App() {
       await dbClear(db, PANORAMAS_STORE).catch(() => {})
     }
     setHistoryItems([])
+    setSelectedHomeIds([])
     setCollapsedGroups({})
     setDeleteTarget(null)
+    setIsDeleteSelectedConfirmOpen(false)
     setClearConfirmChecked(false)
     setIsClearConfirmOpen(false)
-    setStatus('Biblioteka zostala wyczyszczona.')
+    setStatus('Library has been cleared.')
   }
 
   const openClearConfirmModal = () => {
@@ -1590,7 +1754,7 @@ function App() {
   const panoramaCaptionLines = useMemo(() => {
     if (!hasActivePanorama) return []
     if (!gpsCoords) return panoramaDateLabel ? [panoramaDateLabel] : []
-    const locationLine = resolvedLocality || (isResolvingLocality ? 'Ustalanie miejscowosci...' : '')
+    const locationLine = resolvedLocality || (isResolvingLocality ? t('strings.locationResolving') : '')
     if (locationLine && panoramaDateLabel) return [locationLine, panoramaDateLabel]
     if (locationLine) return [locationLine]
     if (panoramaDateLabel) return [panoramaDateLabel]
@@ -1725,6 +1889,8 @@ function App() {
   const previousHomeItem = activeHomeIndex > 0 ? filteredHomeItems[activeHomeIndex - 1] : null
   const nextHomeItem =
     activeHomeIndex >= 0 && activeHomeIndex < filteredHomeItems.length - 1 ? filteredHomeItems[activeHomeIndex + 1] : null
+  const selectedHomeIdSet = useMemo(() => new Set(selectedHomeIds), [selectedHomeIds])
+  const hasHomeSelection = selectedHomeIds.length > 0
 
   const estimatedDbBytes = useMemo(() => {
     try {
@@ -1774,7 +1940,7 @@ function App() {
     a.download = `panorama360-backup-${stamp}.json`
     a.click()
     URL.revokeObjectURL(url)
-    setStatus(`Wyeksportowano backup (${historyItems.length} panoram).`)
+    setStatus(`Backup exported (${historyItems.length} panoramas).`)
   }
 
   const parseBackupFile = async (file) => {
@@ -1915,6 +2081,57 @@ function App() {
     }
   }, [contextMenu.open])
 
+  useEffect(() => {
+    if (!isBackupModalOpen) {
+      backupDragDepthRef.current = 0
+      setIsBackupDragging(false)
+      return
+    }
+
+    const onDragEnter = (event) => {
+      if (!isFileDragEvent(event)) return
+      event.preventDefault()
+      backupDragDepthRef.current += 1
+      setIsBackupDragging(true)
+    }
+
+    const onDragOver = (event) => {
+      if (!isFileDragEvent(event)) return
+      event.preventDefault()
+      setIsBackupDragging(true)
+    }
+
+    const onDragLeave = (event) => {
+      if (!isFileDragEvent(event)) return
+      event.preventDefault()
+      backupDragDepthRef.current = Math.max(0, backupDragDepthRef.current - 1)
+      if (backupDragDepthRef.current === 0) {
+        setIsBackupDragging(false)
+      }
+    }
+
+    const onDrop = (event) => {
+      if (!isFileDragEvent(event)) return
+      event.preventDefault()
+      backupDragDepthRef.current = 0
+      setIsBackupDragging(false)
+      const file = event.dataTransfer?.files?.[0]
+      if (file) setBackupFile(file)
+    }
+
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [isBackupModalOpen])
+
   useLayoutEffect(() => {
     if (!contextMenu.open || !contextMenuRef.current) return
     const el = contextMenuRef.current
@@ -1942,7 +2159,7 @@ function App() {
     let cancelled = false
 
     const rerenderWithQuality = async () => {
-      setBusyText('Zmiana ustawien...')
+      setBusyText('Applying settings...')
       setIsBusy(true)
       await new Promise((resolve) => requestAnimationFrame(resolve))
       if (cancelled) return
@@ -1972,6 +2189,12 @@ function App() {
     setIsDragging(false)
     if (!isFileDragEvent(event)) return
     const [file] = event.dataTransfer.files
+    if (isBackupModalOpen) {
+      backupDragDepthRef.current = 0
+      setIsBackupDragging(false)
+      if (file) setBackupFile(file)
+      return
+    }
     await handleFile(file)
   }
 
@@ -1986,7 +2209,7 @@ function App() {
     if (files.length === 0) return
 
     try {
-      setBusyText('Skanowanie folderu panoram...')
+      setBusyText('Scanning panorama folder...')
       setIsBusy(true)
       await new Promise((resolve) => requestAnimationFrame(resolve))
 
@@ -2004,7 +2227,7 @@ function App() {
         }
       }
       setStatus(
-        `Skan folderu zakonczony. Dodano ${added}, duplikaty: ${duplicates}, >100MB pominiete: ${tooLarge}, wszystkich plikow: ${files.length}.`,
+        `Folder scan complete. Added ${added}, duplicates: ${duplicates}, skipped >100MB: ${tooLarge}, total files: ${files.length}.`,
       )
     } finally {
       setIsBusy(false)
@@ -2049,7 +2272,7 @@ function App() {
       if (scanAfterPick) {
         folderInputRef.current?.click()
       } else {
-        setStatus('Przegladarka nie obsluguje podlaczenia folderu bez skanowania.')
+        setStatus('Browser does not support connecting folder without scanning.')
       }
       return
     }
@@ -2060,7 +2283,7 @@ function App() {
       const granted = await ensureReadPermission(dirHandle)
       setHasFolderAccess(granted)
       if (!granted) {
-        setStatus('Nie przyznano dostepu do folderu.')
+        setStatus('Folder access was not granted.')
         return
       }
 
@@ -2070,19 +2293,19 @@ function App() {
       }
 
       if (!scanAfterPick) {
-        setStatus('Podlaczono folder. Biblioteka zostala zaladowana z backupu bez skanowania.')
+        setStatus('Folder connected. Library was loaded from backup without scanning.')
         return
       }
 
-      setBusyText('Skanowanie folderu panoram...')
+      setBusyText('Scanning panorama folder...')
       setIsBusy(true)
       await new Promise((resolve) => requestAnimationFrame(resolve))
       const { added, duplicates, tooLarge, checked } = await scanDirectoryHandle(dirHandle)
       setStatus(
-        `Skan folderu zakonczony. Dodano ${added}, duplikaty: ${duplicates}, >100MB pominiete: ${tooLarge}, sprawdzono plikow: ${checked}.`,
+        `Folder scan complete. Added ${added}, duplicates: ${duplicates}, skipped >100MB: ${tooLarge}, checked files: ${checked}.`,
       )
     } catch {
-      setStatus('Anulowano wybor folderu lub przegladarka nie obsluguje tej funkcji.')
+      setStatus('Folder selection was canceled or not supported by browser.')
     } finally {
       setIsBusy(false)
     }
@@ -2096,22 +2319,22 @@ function App() {
     }
     const granted = await ensureReadPermission(root)
     setHasFolderAccess(granted)
-    setStatus(granted ? 'Dostep do folderu odswiezony.' : 'Nie udalo sie odswiezyc dostepu do folderu.')
+    setStatus(granted ? 'Folder access refreshed.' : 'Could not refresh folder access.')
   }
 
   const importBackup = async () => {
     if (!backupFile) {
-      setStatus('Wybierz plik backupu .json.')
+      setStatus('Choose a .json backup file.')
       return
     }
     const db = dbRef.current
     if (!db) {
-      setStatus('Baza danych nie jest gotowa.')
+      setStatus('Database is not ready.')
       return
     }
 
     try {
-      setBusyText('Import backupu...')
+      setBusyText('Importing backup...')
       setIsBusy(true)
       await new Promise((resolve) => requestAnimationFrame(resolve))
 
@@ -2140,13 +2363,13 @@ function App() {
       await reloadHistoryFromDb()
       setIsBackupModalOpen(false)
       setBackupFile(null)
-      setStatus(`Import backupu zakonczony. Dodano: ${added}, pominieto duplikaty: ${skipped}.`)
+      setStatus(`Backup import finished. Added: ${added}, skipped duplicates: ${skipped}.`)
 
       if (importLinkFolderAfter) {
         await pickFolderWithFsApi({ scanAfterPick: importScanAfterLink })
       }
     } catch {
-      setStatus('Nie udalo sie zaimportowac backupu. Sprawdz format pliku JSON.')
+      setStatus('Could not import backup. Check JSON file format.')
     } finally {
       setIsBusy(false)
     }
@@ -2159,31 +2382,31 @@ function App() {
       await installPromptEvent.userChoice
       setInstallPromptEvent(null)
     } catch {
-      setStatus('Nie udalo sie wyswietlic promptu instalacji.')
+      setStatus('Could not show install prompt.')
     }
   }
 
   const revealHistoryItemOnDisk = async (item) => {
     if (!item?.relativePath) {
-      setStatus('Brak sciezki do pliku w historii. Ponownie zaimportuj ten folder.')
+      setStatus('No file path in history. Re-import this folder.')
       return
     }
 
     if (!canUseFsApi && !canUseOpenFilePicker) {
-      setStatus('Ta przegladarka nie obsluguje API plikow/folderow. Uzyj Chrome/Edge.')
+      setStatus('This browser does not support files/folders API. Use Chrome/Edge.')
       return
     }
 
     const root = rootDirHandleRef.current
     if (!root) {
-      setStatus('Brak podlaczonego folderu. Kliknij "Wybierz folder".')
+      setStatus('No folder connected. Click "Select folder".')
       return
     }
 
     const granted = await ensureReadPermission(root)
     setHasFolderAccess(granted)
     if (!granted) {
-      setStatus('Brak uprawnienia do folderu. Uzyj "Odswiez dostep".')
+      setStatus('No folder permission. Use "Refresh access".')
       return
     }
 
@@ -2206,15 +2429,20 @@ function App() {
       } else {
         await window.showDirectoryPicker({ mode: 'read', startIn })
       }
-      setStatus(`Otwarto lokalizacje na dysku dla: ${item.name}`)
+      setStatus(`Opened disk location for: ${item.name}`)
     } catch {
-      setStatus('Nie udalo sie otworzyc folderu. Sprawdz uprawnienia przegladarki.')
+      setStatus('Could not open folder. Check browser permissions.')
     }
   }
 
   const selectedContextItem = contextMenu.itemId
     ? historyItems.find((item) => item.id === contextMenu.itemId) || null
     : null
+  const activeContextItem = useMemo(() => {
+    if (selectedContextItem) return selectedContextItem
+    if (!hasActivePanorama || !activeHistoryId) return null
+    return historyItems.find((item) => item.id === activeHistoryId) || null
+  }, [selectedContextItem, hasActivePanorama, activeHistoryId, historyItems])
   const menuProjectionFilter = contextMenu.scope === 'home' ? homeProjectionFilter : panelProjectionFilter
   const menuDeviceFilter = contextMenu.scope === 'home' ? homeDeviceFilter : panelDeviceFilter
   const menuSortOrder = contextMenu.scope === 'home' ? homeSortOrder : panelSortOrder
@@ -2242,6 +2470,8 @@ function App() {
   const openBackupModal = () => {
     setIsBackupModalOpen(true)
     setBackupFile(null)
+    backupDragDepthRef.current = 0
+    setIsBackupDragging(false)
   }
   const onBackupFileInput = (event) => {
     const file = event.target.files?.[0]
@@ -2252,11 +2482,35 @@ function App() {
   }
   const onBackupDrop = (event) => {
     event.preventDefault()
+    backupDragDepthRef.current = 0
+    setIsBackupDragging(false)
     const file = event.dataTransfer?.files?.[0]
     if (file) {
       setBackupFile(file)
     }
   }
+  const toggleHomeSelection = (itemId, checked) => {
+    if (!itemId) return
+    setSelectedHomeIds((prev) => {
+      if (checked) {
+        if (prev.includes(itemId)) return prev
+        return [...prev, itemId]
+      }
+      return prev.filter((id) => id !== itemId)
+    })
+  }
+  const clearHomeSelection = () => {
+    setSelectedHomeIds([])
+  }
+
+  useEffect(() => {
+    setSelectedHomeIds((prev) => {
+      if (prev.length === 0) return prev
+      const existing = new Set(historyItems.map((item) => item.id))
+      const next = prev.filter((id) => existing.has(id))
+      return next.length === prev.length ? prev : next
+    })
+  }, [historyItems])
   const canInstallApp = Boolean(installPromptEvent) && !isInstalled
 
   return (
@@ -2266,16 +2520,19 @@ function App() {
       onDragEnter={(event) => {
         if (!isFileDragEvent(event)) return
         preventDefaults(event)
+        if (isBackupModalOpen) return
         dragDepthRef.current += 1
         setIsDragging(true)
       }}
       onDragOver={(event) => {
         if (!isFileDragEvent(event)) return
         preventDefaults(event)
+        if (isBackupModalOpen) return
       }}
       onDragLeave={(event) => {
         if (!isFileDragEvent(event)) return
         preventDefaults(event)
+        if (isBackupModalOpen) return
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
         if (dragDepthRef.current === 0) {
           setIsDragging(false)
@@ -2289,26 +2546,31 @@ function App() {
         </button>
         {canInstallApp && (
           <button type="button" className="install-btn" onClick={installApp}>
-            Zainstaluj
+            {t('strings.install')}
           </button>
         )}
         <AnimatedDropdown
-          label="Projekcja:"
+          label={t('strings.toolbarProjection')}
           value={projectionMode}
-          options={PROJECTION_OPTIONS}
+          options={projectionOptions}
           onChange={setProjectionMode}
         />
         <label>
-          Blokuj pion (cyl.):
+          {t('strings.toolbarLockVertical')}
           <input
             type="checkbox"
             checked={lockVertical}
             onChange={(event) => setLockVertical(event.target.checked)}
           />
         </label>
-        <AnimatedDropdown label="Jakosc:" value={qualityMode} options={QUALITY_OPTIONS} onChange={setQualityMode} />
+        <AnimatedDropdown
+          label={t('strings.toolbarQuality')}
+          value={qualityMode}
+          options={qualityOptions}
+          onChange={setQualityMode}
+        />
         <label>
-          Odwroc poziomo:
+          {t('strings.toolbarFlip')}
           <input
             type="checkbox"
             checked={flipHorizontal}
@@ -2316,7 +2578,7 @@ function App() {
           />
         </label>
         <label>
-          Pokaz telemetry:
+          {t('strings.toolbarTelemetry')}
           <input
             type="checkbox"
             checked={showTelemetry}
@@ -2340,14 +2602,15 @@ function App() {
       </div>
       <p className="status">
         <span className="status-main">{status}</span>
-        <span className="status-side" aria-label="Statystyki biblioteki">
-          Panoramy: <strong>{historyItems.length}</strong> | Rozmiar bazy: <strong>{formatBytes(displayedDbBytes)}</strong>
+        <span className="status-side" aria-label="Library stats">
+          {t('strings.countPanoramas')}: <strong>{historyItems.length}</strong> | {t('strings.dbSize')}:{' '}
+          <strong>{formatBytes(displayedDbBytes)}</strong>
         </span>
       </p>
       <div className="viewer-wrap">
         <div ref={containerRef} className="viewer" />
         {showLocationPanel && showGpsMapOverlay && hasActivePanorama && gpsCoords && (
-          <div className="map-overlay" aria-label="Lokalizacja GPS panoramy">
+          <div className="map-overlay" aria-label="Panorama GPS location">
             <div className="map-overlay-head">
               <span>GPS</span>
               <a
@@ -2355,10 +2618,10 @@ function App() {
                 target="_blank"
                 rel="noreferrer"
               >
-                Otworz
+                Open
               </a>
             </div>
-            <iframe title="Mapa lokalizacji" src={mapSrc} loading="lazy" />
+            <iframe title="Location map" src={mapSrc} loading="lazy" />
             <p>
               {gpsCoords.lat.toFixed(6)}, {gpsCoords.lon.toFixed(6)}
             </p>
@@ -2366,7 +2629,7 @@ function App() {
         )}
         {showLocationPanel && showGpsMapOverlay && hasActivePanorama && !gpsCoords && (
           <div className="map-overlay map-overlay-empty" aria-live="polite">
-            {hasAnyGpsData ? 'Brak poprawnych danych GPS w EXIF.' : 'Brak danych GPS w EXIF.'}
+            {hasAnyGpsData ? 'No valid GPS coordinates in EXIF.' : 'No GPS data in EXIF.'}
           </div>
         )}
         {showLocationPanel && hasActivePanorama && panoramaCaptionLines.length > 0 && (
@@ -2381,7 +2644,7 @@ function App() {
             <button
               type="button"
               className="viewer-close-btn"
-              aria-label="Zamknij panorame"
+              aria-label="Close panorama"
               onClick={closePanoramaToHome}
             >
               ×
@@ -2390,8 +2653,8 @@ function App() {
               <button
                 type="button"
                 className="viewer-nav viewer-nav-left"
-                aria-label="Poprzednia panorama"
-                title="Poprzednia panorama"
+                aria-label="Previous panorama"
+                title="Previous panorama"
                 onClick={() => openPanoramaFromLibrary(previousHomeItem)}
               >
                 <span>‹</span>
@@ -2401,8 +2664,8 @@ function App() {
               <button
                 type="button"
                 className="viewer-nav viewer-nav-right"
-                aria-label="Nastepna panorama"
-                title="Nastepna panorama"
+                aria-label="Next panorama"
+                title="Next panorama"
                 onClick={() => openPanoramaFromLibrary(nextHomeItem)}
               >
                 <span>›</span>
@@ -2418,8 +2681,8 @@ function App() {
           >
             {filteredHomeItems.length === 0 ? (
               <div className="home-empty">
-                <h2>Brak panoram dla aktywnego filtra</h2>
-                <p>Zmien filtr w menu kontekstowym albo dodaj panoramy do biblioteki.</p>
+                <h2>No panoramas for active filter</h2>
+                <p>Change filters in the context menu or add panoramas to the library.</p>
               </div>
             ) : (
               <div className={`home-grid home-grid-${homeTileSize}`}>
@@ -2427,21 +2690,34 @@ function App() {
                   <button
                     key={`home-${item.id}`}
                     type="button"
-                    className={`home-tile home-tile-${homeTileSize}`}
+                    className={`home-tile home-tile-${homeTileSize} ${hasHomeSelection ? 'has-selection-mode' : ''} ${
+                      selectedHomeIdSet.has(item.id) ? 'is-selected' : ''
+                    }`}
                     onClick={() => openPanoramaFromLibrary(item)}
                     onContextMenu={(event) => openContextMenu(event, item.id, 'home')}
                     onDragStart={(event) => event.preventDefault()}
                     title={`${item.name} (${item.width}x${item.height})`}
                   >
+                    <label
+                      className="home-tile-select"
+                      onClick={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedHomeIdSet.has(item.id)}
+                        onChange={(event) => toggleHomeSelection(item.id, event.target.checked)}
+                      />
+                    </label>
                     {item.thumbDataUrl ? (
                       <img src={item.thumbDataUrl} alt={item.name} className="home-tile-thumb" draggable={false} />
                     ) : (
                       <div className="home-tile-thumb home-tile-thumb-placeholder" />
                     )}
                     <span className="home-tile-name">{item.name}</span>
-                    <span className="home-tile-meta">Typ: {PROJECTION_LABELS[item.projection] || 'Nieznany'}</span>
-                    <span className="home-tile-meta">Urzadzenie: {item.device || 'Nieznane urzadzenie'}</span>
-                    <span className="home-tile-meta">Data: {formatShortDateTime(item.createdAt)}</span>
+                    <span className="home-tile-meta">Type: {projectionLabels[item.projection] || t('strings.unknownProjection')}</span>
+                    <span className="home-tile-meta">Device: {item.device || 'Unknown device'}</span>
+                    <span className="home-tile-meta">Date: {formatShortDateTime(item.createdAt)}</span>
                   </button>
                 ))}
               </div>
@@ -2453,7 +2729,7 @@ function App() {
             <div>Yaw: {telemetry.yaw}</div>
             <div>Pitch: {telemetry.pitch}</div>
             <div>FOV: {telemetry.fov}</div>
-            <div>Proj: {PROJECTION_LABELS[activeProjection]}</div>
+            <div>{t('strings.telemetryProjection')}: {projectionLabels[activeProjection]}</div>
           </div>
         )}
         <div className="side-panel-hover-zone" aria-hidden="true" />
@@ -2463,22 +2739,22 @@ function App() {
               ? 'is-open'
               : ''
           }`}
-          aria-label="Prawy panel"
+          aria-label="Right panel"
           onContextMenu={(event) => openContextMenu(event, null, 'panel')}
           onMouseLeave={() => setIsPanelPinnedOpen(false)}
         >
           <button
             type="button"
             className="side-panel-tab"
-            aria-label="Rozwin biblioteke panoram"
+            aria-label="Expand panorama library"
             onContextMenu={(event) => openContextMenu(event, null, 'panel')}
           >
-            Biblioteka
+            Library
           </button>
           <div className="side-panel-content" onContextMenu={(event) => openContextMenu(event, null, 'panel')}>
-            <h3>Biblioteka panoram</h3>
+            <h3>Panorama library</h3>
             <div className="history-list">
-              {filteredGroupedHistory.length === 0 && <p className="history-empty">Brak panoram dla aktywnego filtra.</p>}
+              {filteredGroupedHistory.length === 0 && <p className="history-empty">No panoramas for active filter.</p>}
               {filteredGroupedHistory.map((group) => (
                 <section key={group.key} className="history-group">
                   <button type="button" className="history-date-btn" onClick={() => toggleHistoryGroup(group.key)}>
@@ -2505,7 +2781,7 @@ function App() {
                         <div className="history-meta">
                           <span className="history-name">{item.name}</span>
                           <span className="history-sub">
-                            {item.width}x{item.height} | {PROJECTION_LABELS[item.projection]}
+                            {item.width}x{item.height} | {projectionLabels[item.projection]}
                           </span>
                         </div>
                       </button>
@@ -2515,11 +2791,11 @@ function App() {
             </div>
             <div className="history-actions">
               <button type="button" className="folder-btn" onClick={pickFolderWithFsApi}>
-                Wybierz folder
+                Select folder
               </button>
               {!hasFolderAccess && (
                 <button type="button" className="folder-btn secondary-btn" onClick={refreshFolderAccess}>
-                  Odswiez dostep
+                  Refresh access
                 </button>
               )}
               <input
@@ -2542,11 +2818,11 @@ function App() {
           onClick={(event) => event.stopPropagation()}
           onMouseLeave={closeContextMenu}
         >
-          <div className="context-title">Filtry</div>
+          <div className="context-title">Filters</div>
           <div className="context-menu-submenu">
             <button type="button" className="context-menu-item submenu-trigger">
               <span className="cm-icon cm-filter" />
-              <span>Typ panoramy</span>
+              <span>Panorama type</span>
               <span className="submenu-arrow">&gt;</span>
             </button>
             <div className="context-submenu-panel">
@@ -2558,7 +2834,7 @@ function App() {
                   closeContextMenuAfterMenuAction()
                 }}
               >
-                <span>Wszystkie</span>
+                <span>All</span>
               </button>
               <button
                 type="button"
@@ -2568,7 +2844,7 @@ function App() {
                   closeContextMenuAfterMenuAction()
                 }}
               >
-                <span>Sferyczne</span>
+                <span>Spherical</span>
               </button>
               <button
                 type="button"
@@ -2578,14 +2854,14 @@ function App() {
                   closeContextMenuAfterMenuAction()
                 }}
               >
-                <span>Cylindryczne</span>
+                <span>Cylindrical</span>
               </button>
             </div>
           </div>
           <div className="context-menu-submenu">
             <button type="button" className="context-menu-item submenu-trigger">
               <span className="cm-icon cm-filter" />
-              <span>Urzadzenie</span>
+              <span>Device</span>
               <span className="submenu-arrow">&gt;</span>
             </button>
             <div className="context-submenu-panel">
@@ -2597,7 +2873,7 @@ function App() {
                   closeContextMenuAfterMenuAction()
                 }}
               >
-                <span>Wszystkie</span>
+                <span>All</span>
               </button>
               {uniqueDevices.map((device) => (
                 <button
@@ -2618,7 +2894,7 @@ function App() {
             <div className="context-menu-submenu">
               <button type="button" className="context-menu-item submenu-trigger">
                 <span className="cm-icon cm-expand" />
-                <span>Rozmiar kafelkow</span>
+                <span>Tile size</span>
                 <span className="submenu-arrow">&gt;</span>
               </button>
               <div className="context-submenu-panel">
@@ -2630,7 +2906,7 @@ function App() {
                     closeContextMenuAfterMenuAction()
                   }}
                 >
-                  <span>Male (domyslnie)</span>
+                  <span>Small (default)</span>
                 </button>
                 <button
                   type="button"
@@ -2640,7 +2916,7 @@ function App() {
                     closeContextMenuAfterMenuAction()
                   }}
                 >
-                  <span>Duze</span>
+                  <span>Large</span>
                 </button>
               </div>
             </div>
@@ -2649,7 +2925,7 @@ function App() {
             <div className="context-menu-submenu">
               <button type="button" className="context-menu-item submenu-trigger">
                 <span className="cm-icon cm-expand" />
-                <span>Rozmiar kafelkow</span>
+                <span>Tile size</span>
                 <span className="submenu-arrow">&gt;</span>
               </button>
               <div className="context-submenu-panel">
@@ -2661,7 +2937,7 @@ function App() {
                     closeContextMenuAfterMenuAction()
                   }}
                 >
-                  <span>Male</span>
+                  <span>Small</span>
                 </button>
                 <button
                   type="button"
@@ -2671,7 +2947,7 @@ function App() {
                     closeContextMenuAfterMenuAction()
                   }}
                 >
-                  <span>Srednie</span>
+                  <span>Medium</span>
                 </button>
                 <button
                   type="button"
@@ -2681,7 +2957,7 @@ function App() {
                     closeContextMenuAfterMenuAction()
                   }}
                 >
-                  <span>Duze (domyslnie)</span>
+                  <span>Large (default)</span>
                 </button>
                 <button
                   type="button"
@@ -2691,7 +2967,7 @@ function App() {
                     closeContextMenuAfterMenuAction()
                   }}
                 >
-                  <span>Bardzo duze</span>
+                  <span>X-Large</span>
                 </button>
               </div>
             </div>
@@ -2699,7 +2975,7 @@ function App() {
           <div className="context-menu-submenu">
             <button type="button" className="context-menu-item submenu-trigger">
               <span className="cm-icon cm-sort" />
-              <span>Sortowanie daty</span>
+              <span>Date sorting</span>
               <span className="submenu-arrow">&gt;</span>
             </button>
             <div className="context-submenu-panel">
@@ -2711,7 +2987,7 @@ function App() {
                   closeContextMenuAfterMenuAction()
                 }}
               >
-                <span>Malejaco (najnowsze)</span>
+                <span>Descending (newest)</span>
               </button>
               <button
                 type="button"
@@ -2721,7 +2997,7 @@ function App() {
                   closeContextMenuAfterMenuAction()
                 }}
               >
-                <span>Rosnaco (najstarsze)</span>
+                <span>Ascending (oldest)</span>
               </button>
             </div>
           </div>
@@ -2737,7 +3013,7 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-collapse" />
-                <span>Zwin wszystkie daty</span>
+                <span>Collapse all dates</span>
               </button>
               <button
                 type="button"
@@ -2748,7 +3024,7 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-expand" />
-                <span>Rozwin wszystkie daty</span>
+                <span>Expand all dates</span>
               </button>
               <div className="context-sep" />
             </>
@@ -2764,7 +3040,7 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-image" />
-                <span>Wybierz obraz</span>
+                <span>{t('strings.openImage')}</span>
               </button>
               <button
                 type="button"
@@ -2776,20 +3052,20 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-exif" />
-                <span>Pokaz EXIF</span>
+                <span>{t('strings.showExif')}</span>
               </button>
               <button
                 type="button"
                 className="context-menu-item"
-                disabled={!selectedContextItem}
+                disabled={!activeContextItem}
                 onClick={() => {
-                  if (!selectedContextItem) return
-                  revealHistoryItemOnDisk(selectedContextItem)
+                  if (!activeContextItem) return
+                  revealHistoryItemOnDisk(activeContextItem)
                   closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-folder" />
-                <span>Pokaz na dysku</span>
+                <span>{t('strings.showOnDisk')}</span>
               </button>
               <button
                 type="button"
@@ -2800,7 +3076,7 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-backup" />
-                <span>Backup import/eksport</span>
+                <span>{t('strings.backupImportExport')}</span>
               </button>
               <button
                 type="button"
@@ -2811,7 +3087,7 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-map" />
-                <span>{showLocationPanel ? 'Ukryj panel lokalizacji' : 'Pokaz panel lokalizacji'}</span>
+                <span>{showLocationPanel ? t('strings.hideLocationPanel') : t('strings.showLocationPanel')}</span>
               </button>
               <button
                 type="button"
@@ -2822,21 +3098,47 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-map" />
-                <span>{showGpsMapOverlay ? 'Ukryj mapke GPS' : 'Pokaz mapke GPS'}</span>
+                <span>{showGpsMapOverlay ? t('strings.hideGpsMap') : t('strings.showGpsMap')}</span>
               </button>
-              <div className="context-sep" />
+              {hasHomeSelection && (
+                <>
+                  <button
+                    type="button"
+                    className="context-menu-item danger"
+                    onClick={() => {
+                      setIsDeleteSelectedConfirmOpen(true)
+                      closeContextMenuAfterMenuAction()
+                    }}
+                  >
+                    <span className="cm-icon cm-delete" />
+                    <span>{t('strings.removeSelectedFromLibrary')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="context-menu-item"
+                    onClick={() => {
+                      clearHomeSelection()
+                      closeContextMenuAfterMenuAction()
+                    }}
+                  >
+                    <span className="cm-icon cm-collapse" />
+                    <span>{t('strings.deselectAll')}</span>
+                  </button>
+                  <div className="context-sep" />
+                </>
+              )}
               <button
                 type="button"
                 className="context-menu-item danger"
-                disabled={!selectedContextItem}
+                disabled={!activeContextItem}
                 onClick={() => {
-                  if (!selectedContextItem) return
-                  setDeleteTarget(selectedContextItem)
+                  if (!activeContextItem) return
+                  setDeleteTarget(activeContextItem)
                   closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-delete" />
-                <span>Usun z biblioteki</span>
+                <span>{t('strings.removeFromLibrary')}</span>
               </button>
               <div className="context-sep" />
             </>
@@ -2854,7 +3156,7 @@ function App() {
                 }}
               >
                 <span className="cm-icon cm-folder" />
-                <span>Pokaz na dysku</span>
+                <span>{t('strings.showOnDisk')}</span>
               </button>
               <div className="context-sep" />
             </>
@@ -2869,7 +3171,7 @@ function App() {
               }}
             >
               <span className="cm-icon cm-clear" />
-              <span>Wyczysc biblioteke</span>
+              <span>{t('strings.clearLibrary')}</span>
             </button>
           )}
         </div>
@@ -2878,14 +3180,31 @@ function App() {
       {deleteTarget && (
         <div className="confirm-backdrop" onClick={() => setDeleteTarget(null)}>
           <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>Usun z biblioteki</h3>
-            <p>Czy na pewno chcesz usunac "{deleteTarget.name}" z biblioteki?</p>
+            <h3>Remove from library</h3>
+            <p>Are you sure you want to remove "{deleteTarget.name}" from the library?</p>
             <div className="confirm-actions">
               <button type="button" className="secondary-btn" onClick={() => setDeleteTarget(null)}>
-                Anuluj
+                Cancel
               </button>
               <button type="button" className="danger-btn" onClick={() => removeHistoryItem(deleteTarget.id)}>
-                Usun
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDeleteSelectedConfirmOpen && (
+        <div className="confirm-backdrop" onClick={() => setIsDeleteSelectedConfirmOpen(false)}>
+          <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>Remove selected from library</h3>
+            <p>Are you sure you want to remove {selectedHomeIds.length} selected panorama(s)?</p>
+            <div className="confirm-actions">
+              <button type="button" className="secondary-btn" onClick={() => setIsDeleteSelectedConfirmOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="danger-btn" onClick={() => removeHistoryItems(selectedHomeIds)}>
+                Remove selected
               </button>
             </div>
           </div>
@@ -2895,22 +3214,22 @@ function App() {
       {isClearConfirmOpen && (
         <div className="confirm-backdrop" onClick={closeClearConfirmModal}>
           <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>Wyczysc biblioteke</h3>
-            <p>Czy na pewno chcesz usunac wszystkie panoramy z biblioteki?</p>
+            <h3>Clear library</h3>
+            <p>Are you sure you want to remove all panoramas from the library?</p>
             <label className="confirm-checkbox">
               <input
                 type="checkbox"
                 checked={clearConfirmChecked}
                 onChange={(event) => setClearConfirmChecked(event.target.checked)}
               />
-              Rozumiem, ze ta operacja usunie cala biblioteke.
+              I understand this action will remove the entire library.
             </label>
             <div className="confirm-actions">
               <button type="button" className="secondary-btn" onClick={closeClearConfirmModal}>
-                Anuluj
+                Cancel
               </button>
               <button type="button" className="danger-btn" disabled={!clearConfirmChecked} onClick={clearLibrary}>
-                Usun wszystko
+                Remove all
               </button>
             </div>
           </div>
@@ -2923,13 +3242,13 @@ function App() {
             <div className="modal-head">
               <h2>EXIF / Metadata</h2>
               <button type="button" onClick={() => setIsExifOpen(false)}>
-                Zamknij
+                Close
               </button>
             </div>
-            {isExifLoading && <p>Odczytywanie EXIF...</p>}
+            {isExifLoading && <p>Reading EXIF...</p>}
             {!isExifLoading && exifError && <p>{exifError}</p>}
             {!isExifLoading && !exifError && exifEntries.length === 0 && (
-              <p>Brak metadanych EXIF/XMP/IPTC w tym pliku.</p>
+              <p>No EXIF/XMP/IPTC metadata found in this file.</p>
             )}
             {!isExifLoading && !exifError && exifEntries.length > 0 && (
               <>
@@ -2941,7 +3260,7 @@ function App() {
                       className={`exif-tab ${exifTab === tabId ? 'active' : ''}`}
                       onClick={() => setExifTab(tabId)}
                     >
-                      {EXIF_TAB_LABELS[tabId]} ({(groupedExifEntries[tabId] || []).length})
+                      {exifTabLabels[tabId]} ({(groupedExifEntries[tabId] || []).length})
                     </button>
                   ))}
                 </div>
@@ -2953,8 +3272,8 @@ function App() {
                     </colgroup>
                     <thead>
                       <tr>
-                        <th>Pole</th>
-                        <th>Wartosc</th>
+                        <th>Field</th>
+                        <th>Value</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2979,30 +3298,46 @@ function App() {
             <div className="modal-head">
               <h2>Backup biblioteki</h2>
               <button type="button" onClick={() => setIsBackupModalOpen(false)}>
-                Zamknij
+                Close
               </button>
             </div>
             <div className="backup-section">
-              <h3>Eksport</h3>
-              <p>Wyeksportuj miniatury i metadane do pliku JSON.</p>
+              <h3>Export</h3>
+              <p>Export thumbnails and metadata to a JSON file.</p>
               <button type="button" onClick={exportBackup}>
-                Eksportuj backup
+                Export backup
               </button>
             </div>
             <div className="backup-section">
               <h3>Import</h3>
-              <p>Przeciagnij plik JSON tutaj albo wybierz z dysku.</p>
+              <p>Drag a JSON file here or choose it from disk.</p>
               <div
-                className="backup-dropzone"
-                onDragOver={(event) => {
+                className={`backup-dropzone ${isBackupDragging ? 'is-active' : ''}`}
+                onDragEnter={(event) => {
+                  if (!isFileDragEvent(event)) return
                   event.preventDefault()
+                  backupDragDepthRef.current += 1
+                  setIsBackupDragging(true)
+                }}
+                onDragOver={(event) => {
+                  if (!isFileDragEvent(event)) return
+                  event.preventDefault()
+                  setIsBackupDragging(true)
+                }}
+                onDragLeave={(event) => {
+                  if (!isFileDragEvent(event)) return
+                  event.preventDefault()
+                  backupDragDepthRef.current = Math.max(0, backupDragDepthRef.current - 1)
+                  if (backupDragDepthRef.current === 0) {
+                    setIsBackupDragging(false)
+                  }
                 }}
                 onDrop={onBackupDrop}
               >
-                {backupFile ? `Wybrano: ${backupFile.name}` : 'Upusc plik backupu (.json)'}
+                {backupFile ? `Selected: ${backupFile.name}` : 'Drop backup file (.json)'}
               </div>
               <button type="button" className="secondary-btn" onClick={() => backupInputRef.current?.click()}>
-                Wybierz plik backupu
+                Choose backup file
               </button>
               <label className="backup-option">
                 <input
@@ -3010,7 +3345,7 @@ function App() {
                   checked={importClearBefore}
                   onChange={(event) => setImportClearBefore(event.target.checked)}
                 />
-                Wyczysc obecna biblioteke przed importem
+                Clear current library before import
               </label>
               <label className="backup-option">
                 <input
@@ -3018,7 +3353,7 @@ function App() {
                   checked={importLinkFolderAfter}
                   onChange={(event) => setImportLinkFolderAfter(event.target.checked)}
                 />
-                Po imporcie podlacz folder z plikami
+                After import, connect folder with files
               </label>
               <label className="backup-option">
                 <input
@@ -3027,14 +3362,14 @@ function App() {
                   disabled={!importLinkFolderAfter}
                   onChange={(event) => setImportScanAfterLink(event.target.checked)}
                 />
-                Po podlaczeniu od razu przeskanuj folder
+                Scan folder immediately after connecting
               </label>
               <div className="backup-actions">
                 <button type="button" className="secondary-btn" onClick={() => setIsBackupModalOpen(false)}>
-                  Anuluj
+                  Cancel
                 </button>
                 <button type="button" onClick={importBackup}>
-                  Importuj backup
+                  Import backup
                 </button>
               </div>
             </div>
