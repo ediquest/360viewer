@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import * as exifr from 'exifr'
 import './App.css'
@@ -34,6 +34,20 @@ const PROJECTION_LABELS = {
   spherical: 'Sferyczna',
   cylindrical: 'Cylindryczna',
 }
+
+const PROJECTION_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'spherical', label: 'Sferyczna' },
+  { value: 'cylindrical', label: 'Cylindryczna' },
+]
+
+const QUALITY_OPTIONS = [
+  { value: 'auto', label: 'Auto (GPU max)' },
+  { value: 'max', label: 'Maks (GPU)' },
+  { value: 'q8192', label: '8192' },
+  { value: 'q4096', label: '4096' },
+  { value: 'q2048', label: '2048' },
+]
 
 const SPHERICAL_DEFAULT_FOV = 80
 const SPHERICAL_MIN_FOV = 30
@@ -251,6 +265,74 @@ const hashBufferSha256 = async (buffer) => {
     .join('')
 }
 
+function AnimatedDropdown({ label, value, options, onChange }) {
+  const rootRef = useRef(null)
+  const buttonRef = useRef(null)
+  const [isOpen, setIsOpen] = useState(false)
+  const selected = options.find((option) => option.value === value) || options[0]
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const onPointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) {
+        setIsOpen(false)
+      }
+    }
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false)
+        buttonRef.current?.focus()
+      }
+    }
+
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [isOpen])
+
+  const handleSelect = (nextValue) => {
+    onChange(nextValue)
+    setIsOpen(false)
+    buttonRef.current?.focus()
+  }
+
+  return (
+    <div ref={rootRef} className={`toolbar-dropdown ${isOpen ? 'is-open' : ''}`}>
+      <span className="toolbar-dropdown-label">{label}</span>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="toolbar-dropdown-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        onClick={() => setIsOpen((prev) => !prev)}
+      >
+        <span className="toolbar-dropdown-value">{selected?.label ?? ''}</span>
+        <span className={`toolbar-dropdown-caret ${isOpen ? 'is-open' : ''}`}>▾</span>
+      </button>
+      <div className="toolbar-dropdown-menu" role="listbox" aria-label={label}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="option"
+            aria-selected={value === option.value}
+            className={`toolbar-dropdown-option ${value === option.value ? 'active' : ''}`}
+            onClick={() => handleSelect(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const containerRef = useRef(null)
   const homeOverlayRef = useRef(null)
@@ -272,6 +354,7 @@ function App() {
   const dbRef = useRef(null)
   const rootDirHandleRef = useRef(null)
   const contextMenuRef = useRef(null)
+  const localityCacheRef = useRef(new Map())
   const dragDepthRef = useRef(0)
   const homeScrollTopRef = useRef(0)
   const shouldRestoreHomeScrollRef = useRef(false)
@@ -301,12 +384,15 @@ function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [busyText, setBusyText] = useState('Ladowanie...')
   const [showTelemetry, setShowTelemetry] = useState(true)
+  const [showLocationPanel, setShowLocationPanel] = useState(true)
+  const [showGpsMapOverlay, setShowGpsMapOverlay] = useState(true)
   const [telemetry, setTelemetry] = useState({ yaw: 0, pitch: 0, fov: SPHERICAL_DEFAULT_FOV })
   const [historyItems, setHistoryItems] = useState([])
   const [hasActivePanorama, setHasActivePanorama] = useState(false)
   const [collapsedGroups, setCollapsedGroups] = useState({})
   const [hasFolderAccess, setHasFolderAccess] = useState(false)
-  const [homeTileSize, setHomeTileSize] = useState('small')
+  const [homeTileSize, setHomeTileSize] = useState('large')
+  const [panelTileSize, setPanelTileSize] = useState('small')
   const [homeProjectionFilter, setHomeProjectionFilter] = useState('all')
   const [homeDeviceFilter, setHomeDeviceFilter] = useState('all')
   const [homeSortOrder, setHomeSortOrder] = useState('desc')
@@ -315,6 +401,7 @@ function App() {
   const [panelSortOrder, setPanelSortOrder] = useState('desc')
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
+  const [clearConfirmChecked, setClearConfirmChecked] = useState(false)
   const [indexedDbBytes, setIndexedDbBytes] = useState(null)
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false)
   const [backupFile, setBackupFile] = useState(null)
@@ -330,6 +417,10 @@ function App() {
     return Boolean(standalone || iosStandalone)
   })
   const [activeHistoryId, setActiveHistoryId] = useState(null)
+  const [isPanelPinnedOpen, setIsPanelPinnedOpen] = useState(false)
+  const [activeCapturedAt, setActiveCapturedAt] = useState(null)
+  const [resolvedLocality, setResolvedLocality] = useState('')
+  const [isResolvingLocality, setIsResolvingLocality] = useState(false)
   const [contextMenu, setContextMenu] = useState({
     open: false,
     x: 0,
@@ -554,9 +645,19 @@ function App() {
           if (typeof s.lockVertical === 'boolean') setLockVertical(s.lockVertical)
           if (typeof s.flipHorizontal === 'boolean') setFlipHorizontal(s.flipHorizontal)
           if (typeof s.showTelemetry === 'boolean') setShowTelemetry(s.showTelemetry)
+          if (typeof s.showLocationPanel === 'boolean') setShowLocationPanel(s.showLocationPanel)
+          if (typeof s.showGpsMapOverlay === 'boolean') setShowGpsMapOverlay(s.showGpsMapOverlay)
           if (s.homeTileSize) setHomeTileSize(s.homeTileSize)
+          if (s.panelTileSize === 'small' || s.panelTileSize === 'large') setPanelTileSize(s.panelTileSize)
           if (s.homeSortOrder) setHomeSortOrder(s.homeSortOrder)
           if (s.panelSortOrder) setPanelSortOrder(s.panelSortOrder)
+          if (s.collapsedGroups && typeof s.collapsedGroups === 'object') {
+            const nextCollapsed = {}
+            for (const [key, value] of Object.entries(s.collapsedGroups)) {
+              if (value === true) nextCollapsed[key] = true
+            }
+            setCollapsedGroups(nextCollapsed)
+          }
         }
 
         const cleanedPanoramas = []
@@ -637,12 +738,29 @@ function App() {
       lockVertical,
       flipHorizontal,
       showTelemetry,
+      showLocationPanel,
+      showGpsMapOverlay,
       homeTileSize,
+      panelTileSize,
       homeSortOrder,
       panelSortOrder,
+      collapsedGroups,
     }
     dbPut(db, SETTINGS_STORE, { key: 'app', value }).catch(() => {})
-  }, [qualityMode, projectionMode, lockVertical, flipHorizontal, showTelemetry, homeTileSize, homeSortOrder, panelSortOrder])
+  }, [
+    qualityMode,
+    projectionMode,
+    lockVertical,
+    flipHorizontal,
+    showTelemetry,
+    showLocationPanel,
+    showGpsMapOverlay,
+    homeTileSize,
+    panelTileSize,
+    homeSortOrder,
+    panelSortOrder,
+    collapsedGroups,
+  ])
 
   const applyProjectionCameraSettings = (projection) => {
     const camera = cameraRef.current
@@ -1146,6 +1264,7 @@ function App() {
       }
 
       const resolvedProjection = forcedProjection || getResolvedProjection(width, height, parsed)
+      setActiveCapturedAt(extractCreatedAt(file, parsed))
 
       if (!isPanoramaCandidateWithMetadata(width, height, parsed)) {
         URL.revokeObjectURL(tmpUrl)
@@ -1348,8 +1467,19 @@ function App() {
     setHistoryItems([])
     setCollapsedGroups({})
     setDeleteTarget(null)
+    setClearConfirmChecked(false)
     setIsClearConfirmOpen(false)
     setStatus('Biblioteka zostala wyczyszczona.')
+  }
+
+  const openClearConfirmModal = () => {
+    setClearConfirmChecked(false)
+    setIsClearConfirmOpen(true)
+  }
+
+  const closeClearConfirmModal = () => {
+    setClearConfirmChecked(false)
+    setIsClearConfirmOpen(false)
   }
 
   const exifEntries = exifData ? Object.entries(exifData) : []
@@ -1452,6 +1582,88 @@ function App() {
     const bbox = `${left},${bottom},${right},${top}`
     return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${gpsCoords.lat}%2C${gpsCoords.lon}`
   }, [gpsCoords])
+  const panoramaDateLabel = useMemo(() => {
+    if (!activeCapturedAt) return ''
+    const formatted = formatShortDateTime(activeCapturedAt)
+    return formatted === '-' ? '' : formatted
+  }, [activeCapturedAt])
+  const panoramaCaptionLines = useMemo(() => {
+    if (!hasActivePanorama) return []
+    if (!gpsCoords) return panoramaDateLabel ? [panoramaDateLabel] : []
+    const locationLine = resolvedLocality || (isResolvingLocality ? 'Ustalanie miejscowosci...' : '')
+    if (locationLine && panoramaDateLabel) return [locationLine, panoramaDateLabel]
+    if (locationLine) return [locationLine]
+    if (panoramaDateLabel) return [panoramaDateLabel]
+    return []
+  }, [hasActivePanorama, gpsCoords, resolvedLocality, isResolvingLocality, panoramaDateLabel])
+
+  useEffect(() => {
+    if (!hasActivePanorama || !gpsCoords) {
+      setResolvedLocality('')
+      setIsResolvingLocality(false)
+      return
+    }
+
+    const lat = Number(gpsCoords.lat)
+    const lon = Number(gpsCoords.lon)
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setResolvedLocality('')
+      setIsResolvingLocality(false)
+      return
+    }
+
+    const key = `${lat.toFixed(4)},${lon.toFixed(4)}`
+    const cached = localityCacheRef.current.get(key)
+    if (typeof cached === 'string') {
+      setResolvedLocality(cached)
+      setIsResolvingLocality(false)
+      return
+    }
+
+    let cancelled = false
+    const controller = new AbortController()
+    setIsResolvingLocality(true)
+
+    const resolveLocality = async () => {
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=12&addressdetails=1`,
+          {
+            headers: {
+              'Accept-Language': 'pl,en',
+            },
+            signal: controller.signal,
+          },
+        )
+        if (!response.ok) throw new Error('reverse geocoding failed')
+        const payload = await response.json()
+        const address = payload?.address || {}
+        const locality =
+          address.city ||
+          address.town ||
+          address.village ||
+          address.municipality ||
+          address.suburb ||
+          address.county ||
+          address.state ||
+          ''
+        localityCacheRef.current.set(key, locality)
+        if (!cancelled) setResolvedLocality(locality)
+      } catch {
+        localityCacheRef.current.set(key, '')
+        if (!cancelled) setResolvedLocality('')
+      } finally {
+        if (!cancelled) setIsResolvingLocality(false)
+      }
+    }
+
+    resolveLocality()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [hasActivePanorama, gpsCoords])
 
   useEffect(() => {
     if (!visibleExifTabs.includes(exifTab)) {
@@ -1596,7 +1808,7 @@ function App() {
     }
   }
 
-  const formatShortDateTime = (timestamp) => {
+  function formatShortDateTime(timestamp) {
     if (!timestamp) return '-'
     const d = new Date(timestamp)
     if (!Number.isFinite(d.getTime())) return '-'
@@ -1652,6 +1864,13 @@ function App() {
     setContextMenu((prev) => ({ ...prev, open: false }))
   }
 
+  const closeContextMenuAfterMenuAction = () => {
+    if (contextMenu.scope === 'panel') {
+      setIsPanelPinnedOpen(true)
+    }
+    closeContextMenu()
+  }
+
   const rememberHomeScrollPosition = () => {
     if (homeOverlayRef.current) {
       homeScrollTopRef.current = homeOverlayRef.current.scrollTop || 0
@@ -1662,12 +1881,15 @@ function App() {
     if (!hasActivePanorama) return
     shouldRestoreHomeScrollRef.current = true
     setHasActivePanorama(false)
+    setResolvedLocality('')
+    setIsResolvingLocality(false)
   }
 
   const openPanoramaFromLibrary = async (item) => {
     if (!item) return
     if (!hasActivePanorama) rememberHomeScrollPosition()
     setActiveHistoryId(item.id || null)
+    setActiveCapturedAt(Number(item.createdAt) || null)
     await openHistoryItem(item)
   }
 
@@ -1693,7 +1915,7 @@ function App() {
     }
   }, [contextMenu.open])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!contextMenu.open || !contextMenuRef.current) return
     const el = contextMenuRef.current
     const rect = el.getBoundingClientRect()
@@ -2070,14 +2292,12 @@ function App() {
             Zainstaluj
           </button>
         )}
-        <label>
-          Projekcja:
-          <select value={projectionMode} onChange={(event) => setProjectionMode(event.target.value)}>
-            <option value="auto">Auto</option>
-            <option value="spherical">Sferyczna</option>
-            <option value="cylindrical">Cylindryczna</option>
-          </select>
-        </label>
+        <AnimatedDropdown
+          label="Projekcja:"
+          value={projectionMode}
+          options={PROJECTION_OPTIONS}
+          onChange={setProjectionMode}
+        />
         <label>
           Blokuj pion (cyl.):
           <input
@@ -2086,16 +2306,7 @@ function App() {
             onChange={(event) => setLockVertical(event.target.checked)}
           />
         </label>
-        <label>
-          Jakosc:
-          <select value={qualityMode} onChange={(event) => setQualityMode(event.target.value)}>
-            <option value="auto">Auto (GPU max)</option>
-            <option value="max">Maks (GPU)</option>
-            <option value="q8192">8192</option>
-            <option value="q4096">4096</option>
-            <option value="q2048">2048</option>
-          </select>
-        </label>
+        <AnimatedDropdown label="Jakosc:" value={qualityMode} options={QUALITY_OPTIONS} onChange={setQualityMode} />
         <label>
           Odwroc poziomo:
           <input
@@ -2135,7 +2346,7 @@ function App() {
       </p>
       <div className="viewer-wrap">
         <div ref={containerRef} className="viewer" />
-        {hasActivePanorama && gpsCoords && (
+        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && gpsCoords && (
           <div className="map-overlay" aria-label="Lokalizacja GPS panoramy">
             <div className="map-overlay-head">
               <span>GPS</span>
@@ -2153,9 +2364,16 @@ function App() {
             </p>
           </div>
         )}
-        {hasActivePanorama && !gpsCoords && (
+        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && !gpsCoords && (
           <div className="map-overlay map-overlay-empty" aria-live="polite">
             {hasAnyGpsData ? 'Brak poprawnych danych GPS w EXIF.' : 'Brak danych GPS w EXIF.'}
+          </div>
+        )}
+        {showLocationPanel && hasActivePanorama && panoramaCaptionLines.length > 0 && (
+          <div className="panorama-caption" aria-live="polite">
+            {panoramaCaptionLines.map((line, index) => (
+              <div key={`${line}-${index}`}>{line}</div>
+            ))}
           </div>
         )}
         {hasActivePanorama && (
@@ -2241,10 +2459,13 @@ function App() {
         <div className="side-panel-hover-zone" aria-hidden="true" />
         <aside
           className={`side-panel ${
-            (contextMenu.open && contextMenu.scope === 'panel') || deleteTarget || isClearConfirmOpen ? 'is-open' : ''
+            (contextMenu.open && contextMenu.scope === 'panel') || isPanelPinnedOpen || deleteTarget || isClearConfirmOpen
+              ? 'is-open'
+              : ''
           }`}
           aria-label="Prawy panel"
           onContextMenu={(event) => openContextMenu(event, null, 'panel')}
+          onMouseLeave={() => setIsPanelPinnedOpen(false)}
         >
           <button
             type="button"
@@ -2271,7 +2492,7 @@ function App() {
                       <button
                         key={item.id}
                         type="button"
-                        className="history-item"
+                        className={`history-item history-item-${panelTileSize}`}
                         onClick={() => openPanoramaFromLibrary(item)}
                         onContextMenu={(event) => openContextMenu(event, item.id)}
                         title={`${item.name} (${item.width}x${item.height})`}
@@ -2319,13 +2540,14 @@ function App() {
           className={`context-menu ${contextMenu.submenuSide === 'left' ? 'submenu-left' : 'submenu-right'}`}
           style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
           onClick={(event) => event.stopPropagation()}
+          onMouseLeave={closeContextMenu}
         >
           <div className="context-title">Filtry</div>
           <div className="context-menu-submenu">
             <button type="button" className="context-menu-item submenu-trigger">
               <span className="cm-icon cm-filter" />
               <span>Typ panoramy</span>
-              <span className="submenu-arrow">›</span>
+              <span className="submenu-arrow">&gt;</span>
             </button>
             <div className="context-submenu-panel">
               <button
@@ -2333,7 +2555,7 @@ function App() {
                 className={`context-menu-item ${menuProjectionFilter === 'all' ? 'active' : ''}`}
                 onClick={() => {
                   setMenuProjectionFilter('all')
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span>Wszystkie</span>
@@ -2343,7 +2565,7 @@ function App() {
                 className={`context-menu-item ${menuProjectionFilter === 'spherical' ? 'active' : ''}`}
                 onClick={() => {
                   setMenuProjectionFilter('spherical')
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span>Sferyczne</span>
@@ -2353,7 +2575,7 @@ function App() {
                 className={`context-menu-item ${menuProjectionFilter === 'cylindrical' ? 'active' : ''}`}
                 onClick={() => {
                   setMenuProjectionFilter('cylindrical')
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span>Cylindryczne</span>
@@ -2364,7 +2586,7 @@ function App() {
             <button type="button" className="context-menu-item submenu-trigger">
               <span className="cm-icon cm-filter" />
               <span>Urzadzenie</span>
-              <span className="submenu-arrow">›</span>
+              <span className="submenu-arrow">&gt;</span>
             </button>
             <div className="context-submenu-panel">
               <button
@@ -2372,7 +2594,7 @@ function App() {
                 className={`context-menu-item ${menuDeviceFilter === 'all' ? 'active' : ''}`}
                 onClick={() => {
                   setMenuDeviceFilter('all')
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span>Wszystkie</span>
@@ -2384,7 +2606,7 @@ function App() {
                   className={`context-menu-item ${menuDeviceFilter === device ? 'active' : ''}`}
                   onClick={() => {
                     setMenuDeviceFilter(device)
-                    closeContextMenu()
+                    closeContextMenuAfterMenuAction()
                   }}
                 >
                   <span>{device}</span>
@@ -2392,60 +2614,93 @@ function App() {
               ))}
             </div>
           </div>
-          <div className="context-menu-submenu">
-            <button type="button" className="context-menu-item submenu-trigger">
-              <span className="cm-icon cm-expand" />
-              <span>Rozmiar kafelkow</span>
-              <span className="submenu-arrow">›</span>
-            </button>
-            <div className="context-submenu-panel">
-              <button
-                type="button"
-                className={`context-menu-item ${homeTileSize === 'small' ? 'active' : ''}`}
-                onClick={() => {
-                  setHomeTileSize('small')
-                  closeContextMenu()
-                }}
-              >
-                <span>Male (domyslnie)</span>
+          {contextMenu.scope === 'panel' && (
+            <div className="context-menu-submenu">
+              <button type="button" className="context-menu-item submenu-trigger">
+                <span className="cm-icon cm-expand" />
+                <span>Rozmiar kafelkow</span>
+                <span className="submenu-arrow">&gt;</span>
               </button>
-              <button
-                type="button"
-                className={`context-menu-item ${homeTileSize === 'medium' ? 'active' : ''}`}
-                onClick={() => {
-                  setHomeTileSize('medium')
-                  closeContextMenu()
-                }}
-              >
-                <span>Srednie</span>
-              </button>
-              <button
-                type="button"
-                className={`context-menu-item ${homeTileSize === 'large' ? 'active' : ''}`}
-                onClick={() => {
-                  setHomeTileSize('large')
-                  closeContextMenu()
-                }}
-              >
-                <span>Duze</span>
-              </button>
-              <button
-                type="button"
-                className={`context-menu-item ${homeTileSize === 'xlarge' ? 'active' : ''}`}
-                onClick={() => {
-                  setHomeTileSize('xlarge')
-                  closeContextMenu()
-                }}
-              >
-                <span>Bardzo duze</span>
-              </button>
+              <div className="context-submenu-panel">
+                <button
+                  type="button"
+                  className={`context-menu-item ${panelTileSize === 'small' ? 'active' : ''}`}
+                  onClick={() => {
+                    setPanelTileSize('small')
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span>Male (domyslnie)</span>
+                </button>
+                <button
+                  type="button"
+                  className={`context-menu-item ${panelTileSize === 'large' ? 'active' : ''}`}
+                  onClick={() => {
+                    setPanelTileSize('large')
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span>Duze</span>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
+          {contextMenu.scope === 'home' && (
+            <div className="context-menu-submenu">
+              <button type="button" className="context-menu-item submenu-trigger">
+                <span className="cm-icon cm-expand" />
+                <span>Rozmiar kafelkow</span>
+                <span className="submenu-arrow">&gt;</span>
+              </button>
+              <div className="context-submenu-panel">
+                <button
+                  type="button"
+                  className={`context-menu-item ${homeTileSize === 'small' ? 'active' : ''}`}
+                  onClick={() => {
+                    setHomeTileSize('small')
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span>Male</span>
+                </button>
+                <button
+                  type="button"
+                  className={`context-menu-item ${homeTileSize === 'medium' ? 'active' : ''}`}
+                  onClick={() => {
+                    setHomeTileSize('medium')
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span>Srednie</span>
+                </button>
+                <button
+                  type="button"
+                  className={`context-menu-item ${homeTileSize === 'large' ? 'active' : ''}`}
+                  onClick={() => {
+                    setHomeTileSize('large')
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span>Duze (domyslnie)</span>
+                </button>
+                <button
+                  type="button"
+                  className={`context-menu-item ${homeTileSize === 'xlarge' ? 'active' : ''}`}
+                  onClick={() => {
+                    setHomeTileSize('xlarge')
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span>Bardzo duze</span>
+                </button>
+              </div>
+            </div>
+          )}
           <div className="context-menu-submenu">
             <button type="button" className="context-menu-item submenu-trigger">
               <span className="cm-icon cm-sort" />
               <span>Sortowanie daty</span>
-              <span className="submenu-arrow">›</span>
+              <span className="submenu-arrow">&gt;</span>
             </button>
             <div className="context-submenu-panel">
               <button
@@ -2453,7 +2708,7 @@ function App() {
                 className={`context-menu-item ${menuSortOrder === 'desc' ? 'active' : ''}`}
                 onClick={() => {
                   setMenuSortOrder('desc')
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span>Malejaco (najnowsze)</span>
@@ -2463,7 +2718,7 @@ function App() {
                 className={`context-menu-item ${menuSortOrder === 'asc' ? 'active' : ''}`}
                 onClick={() => {
                   setMenuSortOrder('asc')
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span>Rosnaco (najstarsze)</span>
@@ -2478,7 +2733,7 @@ function App() {
                 className="context-menu-item"
                 onClick={() => {
                   collapseAllGroups()
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-collapse" />
@@ -2489,7 +2744,7 @@ function App() {
                 className="context-menu-item"
                 onClick={() => {
                   expandAllGroups()
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-expand" />
@@ -2505,7 +2760,7 @@ function App() {
                 className="context-menu-item"
                 onClick={() => {
                   inputRef.current?.click()
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-image" />
@@ -2517,7 +2772,7 @@ function App() {
                 disabled={!loadedMetaRef.current || isExifLoading}
                 onClick={() => {
                   setIsExifOpen(true)
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-exif" />
@@ -2530,7 +2785,7 @@ function App() {
                 onClick={() => {
                   if (!selectedContextItem) return
                   revealHistoryItemOnDisk(selectedContextItem)
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-folder" />
@@ -2541,11 +2796,33 @@ function App() {
                 className="context-menu-item"
                 onClick={() => {
                   openBackupModal()
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-backup" />
                 <span>Backup import/eksport</span>
+              </button>
+              <button
+                type="button"
+                className={`context-menu-item ${showLocationPanel ? 'active' : ''}`}
+                onClick={() => {
+                  setShowLocationPanel((prev) => !prev)
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-map" />
+                <span>{showLocationPanel ? 'Ukryj panel lokalizacji' : 'Pokaz panel lokalizacji'}</span>
+              </button>
+              <button
+                type="button"
+                className={`context-menu-item ${showGpsMapOverlay ? 'active' : ''}`}
+                onClick={() => {
+                  setShowGpsMapOverlay((prev) => !prev)
+                  closeContextMenuAfterMenuAction()
+                }}
+              >
+                <span className="cm-icon cm-map" />
+                <span>{showGpsMapOverlay ? 'Ukryj mapke GPS' : 'Pokaz mapke GPS'}</span>
               </button>
               <div className="context-sep" />
               <button
@@ -2555,7 +2832,7 @@ function App() {
                 onClick={() => {
                   if (!selectedContextItem) return
                   setDeleteTarget(selectedContextItem)
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-delete" />
@@ -2573,7 +2850,7 @@ function App() {
                 onClick={() => {
                   if (!selectedContextItem) return
                   revealHistoryItemOnDisk(selectedContextItem)
-                  closeContextMenu()
+                  closeContextMenuAfterMenuAction()
                 }}
               >
                 <span className="cm-icon cm-folder" />
@@ -2587,8 +2864,8 @@ function App() {
               type="button"
               className="context-menu-item danger"
               onClick={() => {
-                setIsClearConfirmOpen(true)
-                closeContextMenu()
+                openClearConfirmModal()
+                closeContextMenuAfterMenuAction()
               }}
             >
               <span className="cm-icon cm-clear" />
@@ -2616,15 +2893,23 @@ function App() {
       )}
 
       {isClearConfirmOpen && (
-        <div className="confirm-backdrop" onClick={() => setIsClearConfirmOpen(false)}>
+        <div className="confirm-backdrop" onClick={closeClearConfirmModal}>
           <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
             <h3>Wyczysc biblioteke</h3>
             <p>Czy na pewno chcesz usunac wszystkie panoramy z biblioteki?</p>
+            <label className="confirm-checkbox">
+              <input
+                type="checkbox"
+                checked={clearConfirmChecked}
+                onChange={(event) => setClearConfirmChecked(event.target.checked)}
+              />
+              Rozumiem, ze ta operacja usunie cala biblioteke.
+            </label>
             <div className="confirm-actions">
-              <button type="button" className="secondary-btn" onClick={() => setIsClearConfirmOpen(false)}>
+              <button type="button" className="secondary-btn" onClick={closeClearConfirmModal}>
                 Anuluj
               </button>
-              <button type="button" className="danger-btn" onClick={clearLibrary}>
+              <button type="button" className="danger-btn" disabled={!clearConfirmChecked} onClick={clearLibrary}>
                 Usun wszystko
               </button>
             </div>
@@ -2770,3 +3055,4 @@ function App() {
 }
 
 export default App
+
