@@ -78,6 +78,8 @@ const I18N = {
       showLocationPanel: 'Show location panel',
       hideGpsMap: 'Hide GPS mini-map',
       showGpsMap: 'Show GPS mini-map',
+      emptyLibraryTitle: 'Panorama 360 Viewer',
+      emptyLibraryHint: 'Library is empty. Add panoramas to the library.',
       cancelScan: 'Cancel scan',
       cancel: 'Cancel',
       scanCanceled: 'Scan canceled by user.',
@@ -208,6 +210,8 @@ const I18N = {
       showLocationPanel: 'Pokaz panel lokalizacji',
       hideGpsMap: 'Ukryj mapke GPS',
       showGpsMap: 'Pokaz mapke GPS',
+      emptyLibraryTitle: 'Panorama 360 Viewer',
+      emptyLibraryHint: 'Biblioteka jest pusta. Dodaj panoramy do biblioteki.',
       cancelScan: 'Anuluj skanowanie',
       cancel: 'Anuluj',
       scanCanceled: 'Skanowanie anulowane przez uzytkownika.',
@@ -1456,6 +1460,7 @@ function App() {
   const [importClearBefore, setImportClearBefore] = useState(false)
   const [importLinkFolderAfter, setImportLinkFolderAfter] = useState(true)
   const [importScanAfterLink, setImportScanAfterLink] = useState(false)
+  const [connectedRootCount, setConnectedRootCount] = useState(0)
   const [installPromptEvent, setInstallPromptEvent] = useState(null)
   const [isInstalled, setIsInstalled] = useState(() => {
     if (typeof window === 'undefined') return false
@@ -1914,6 +1919,7 @@ function App() {
         const initialHandles = handlesFromNewKey.length > 0 ? handlesFromNewKey : handlesFromLegacyKey
         rootDirHandlesRef.current = initialHandles
         rootDirHandleRef.current = initialHandles[0] || null
+        setConnectedRootCount(initialHandles.length)
         if (handlesFromNewKey.length === 0 && initialHandles.length > 0) {
           await dbPut(db, SETTINGS_STORE, { key: ROOT_HANDLES_KEY, value: initialHandles }).catch(() => {})
         }
@@ -3031,6 +3037,7 @@ function App() {
     const nextHandles = Array.isArray(handles) ? handles.filter(Boolean) : []
     rootDirHandlesRef.current = nextHandles
     rootDirHandleRef.current = nextHandles[0] || null
+    setConnectedRootCount(nextHandles.length)
     const db = dbRef.current
     if (!db) return
     await dbPut(db, SETTINGS_STORE, { key: ROOT_HANDLES_KEY, value: nextHandles }).catch(() => {})
@@ -3073,13 +3080,81 @@ function App() {
     await processPanoramaFile(file, { persistHistory: true, loadingText: 'Loading panorama...' })
   }
 
-  const relinkHistoryItemFromPicker = async (item, rootHandle) => {
-    if (!canUseOpenFilePicker) return false
+  const relinkHistoryItemFromPicker = async (item, startHandle, candidateRoots = []) => {
+    if (!canUseOpenFilePicker && !canUseFsApi) return false
     try {
-      // @ts-ignore
-      const [pickedHandle] = await window.showOpenFilePicker({
+      if (canUseFsApi) {
+        const dirPickerOptions = { mode: 'read' }
+        if (startHandle) {
+          dirPickerOptions.startIn = startHandle
+        }
+        // @ts-ignore
+        const selectedRoot = await window.showDirectoryPicker(dirPickerOptions)
+        const granted = await ensureReadPermission(selectedRoot)
+        if (!granted) {
+          setHasFolderAccess(false)
+          setStatus('Folder access was not granted.')
+          return false
+        }
+        const { handles } = await addConnectedRootHandle(selectedRoot)
+        setHasFolderAccess(true)
+        setStatus(`Folder connected (${handles.length}). Trying to open panorama...`)
+
+        let resolvedPath = normalizeRelativePath(item.relativePath)
+        let file = await getFileFromRelativePath(selectedRoot, resolvedPath)
+        if (!file) {
+          const found = await findFilesByNameAcrossRoots([selectedRoot], item.name, 32)
+          if (found.length > 0) {
+            file = found[0].file
+            resolvedPath = normalizeRelativePath(found[0].relativePath || resolvedPath)
+          }
+        }
+        if (!file) {
+          const foundLoose = await findFilesByLooseNameAcrossRoots([selectedRoot], item.name, 32)
+          if (foundLoose.length > 0) {
+            file = foundLoose[0].file
+            resolvedPath = normalizeRelativePath(foundLoose[0].relativePath || resolvedPath)
+          }
+        }
+
+        if (!file) {
+          setStatus(`Connected folder "${selectedRoot?.name || ''}", but file "${item.name}" was not found there.`)
+          return false
+        }
+
+        const openedWithStoredProjection = await processPanoramaFile(file, {
+          persistHistory: false,
+          forcedProjection: item.projection,
+          loadingText: 'Loading panorama...',
+        })
+        const opened = openedWithStoredProjection
+          || (await processPanoramaFile(file, {
+            persistHistory: false,
+            forcedProjection: null,
+            loadingText: 'Loading panorama...',
+          }))
+        if (!opened) {
+          setStatus(`Could not open "${item.name}" from selected folder.`)
+          return false
+        }
+
+        const nextItem = {
+          ...item,
+          name: file.name || item.name,
+          relativePath: normalizeRelativePath(resolvedPath || file.name || item.relativePath),
+          rootName: selectedRoot?.name || item.rootName || '',
+        }
+        const db = dbRef.current
+        if (db) {
+          await dbPut(db, PANORAMAS_STORE, nextItem).catch(() => {})
+        }
+        setHistoryItems((prev) => prev.map((entry) => (entry.id === item.id ? nextItem : entry)))
+        setStatus(`Relinked and opened: ${nextItem.name}`)
+        return true
+      }
+
+      const pickerOptions = {
         multiple: false,
-        startIn: rootHandle,
         types: [
           {
             description: 'Obrazy',
@@ -3088,7 +3163,12 @@ function App() {
             },
           },
         ],
-      })
+      }
+      if (startHandle) {
+        pickerOptions.startIn = startHandle
+      }
+      // @ts-ignore
+      const [pickedHandle] = await window.showOpenFilePicker(pickerOptions)
       const file = await pickedHandle.getFile()
       await processPanoramaFile(file, {
         persistHistory: false,
@@ -3096,21 +3176,28 @@ function App() {
         loadingText: 'Loading panorama...',
       })
 
-      let nextRelativePath = normalizeRelativePath(item.relativePath)
-      try {
-        const parts = await rootHandle.resolve(pickedHandle)
+      let resolvedRootHandle = null
+      let nextRelativePath = normalizeRelativePath(file.name || item.name || '')
+      const rootsToTry = Array.isArray(candidateRoots) && candidateRoots.length > 0
+        ? candidateRoots.filter(Boolean)
+        : startHandle
+          ? [startHandle]
+          : []
+      for (const rootHandle of rootsToTry) {
+        // eslint-disable-next-line no-await-in-loop
+        const parts = await rootHandle.resolve(pickedHandle).catch(() => null)
         if (Array.isArray(parts) && parts.length > 0) {
+          resolvedRootHandle = rootHandle
           nextRelativePath = normalizeRelativePath(parts.join('/'))
+          break
         }
-      } catch {
-        // ignore resolve errors
       }
 
       const nextItem = {
         ...item,
         name: file.name || item.name,
         relativePath: normalizeRelativePath(nextRelativePath),
-        rootName: rootHandle?.name || item.rootName || '',
+        rootName: resolvedRootHandle?.name || item.rootName || '',
       }
       const db = dbRef.current
       if (db) {
@@ -3320,7 +3407,17 @@ function App() {
       setStatus('No folder permission. Use "Refresh access".')
       return
     }
-    const pickerRoot = accessibleRoots[0]
+    let pickerRoot = accessibleRoots[0]
+    if (item?.relativePath) {
+      for (const rootHandle of accessibleRoots) {
+        // eslint-disable-next-line no-await-in-loop
+        const dir = await getDirectoryFromRelativePath(rootHandle, item.relativePath)
+        if (dir) {
+          pickerRoot = dir
+          break
+        }
+      }
+    }
 
     const persistResolvedPath = async (resolvedPath, nameOverride = null, rootNameOverride = null, rootHandleOverride = null) => {
       const normalized = normalizeRelativePath(resolvedPath)
@@ -3459,7 +3556,7 @@ function App() {
 
     if (!item?.relativePath) {
       debugOpenHistory('openHistoryItem:no relativePath, trying picker')
-      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
+      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot, accessibleRoots)
       if (!relinked) {
         setStatus('No file path in history. Pick panorama file manually.')
       }
@@ -3502,7 +3599,7 @@ function App() {
         if (openedFromSearch) {
           return
         }
-        const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
+        const relinked = await relinkHistoryItemFromPicker(item, pickerRoot, accessibleRoots)
         if (!relinked) {
           const rootsInfo = accessibleRoots.map((h) => h?.name || '(unknown)').join(', ')
           debugOpenHistory('openHistoryItem:not found in roots', { rootsInfo })
@@ -3534,7 +3631,7 @@ function App() {
       if (openedFromSearch) {
         return
       }
-      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
+      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot, accessibleRoots)
       if (!relinked) {
         const rootsInfo = accessibleRoots.map((h) => h?.name || '(unknown)').join(', ')
         debugOpenHistory('openHistoryItem:not found in roots after path fail', { rootsInfo })
@@ -3546,7 +3643,7 @@ function App() {
         name: item.name,
         message: error?.message || String(error),
       })
-      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot)
+      const relinked = await relinkHistoryItemFromPicker(item, pickerRoot, accessibleRoots)
       if (!relinked) {
         setStatus('File not found on disk. Choose the correct panorama folder.')
       }
@@ -3789,8 +3886,27 @@ function App() {
     const db = dbRef.current
     if (db) {
       await dbClear(db, PANORAMAS_STORE).catch(() => {})
+      await dbPut(db, SETTINGS_STORE, { key: ROOT_HANDLES_KEY, value: [] }).catch(() => {})
+      await dbDelete(db, SETTINGS_STORE, ROOT_HANDLE_KEY).catch(() => {})
     }
+    rootDirHandlesRef.current = []
+    rootDirHandleRef.current = null
+    setConnectedRootCount(0)
+    setHasFolderAccess(false)
     transientHistoryFilesRef.current.clear()
+    if (currentUrlRef.current) {
+      URL.revokeObjectURL(currentUrlRef.current)
+      currentUrlRef.current = null
+    }
+    loadedImageRef.current = null
+    loadedMetaRef.current = null
+    setHasActivePanorama(false)
+    setActiveHistoryId(null)
+    setIsEditMode(false)
+    setIsExportPanelOpen(false)
+    setIsMapPickerOpen(false)
+    setIsMaskEditorOpen(false)
+    setIsMaskDrawMode(false)
     setHistoryItems([])
     setSelectedHomeIds([])
     setCollapsedGroups({})
@@ -4048,6 +4164,20 @@ function App() {
       pendingGpsOverrideActionRef.current = null
     }
   }, [hasActivePanorama])
+
+  useEffect(() => {
+    if (historyItems.length !== 0) return
+    if (currentUrlRef.current) {
+      URL.revokeObjectURL(currentUrlRef.current)
+      currentUrlRef.current = null
+    }
+    loadedImageRef.current = null
+    loadedMetaRef.current = null
+    setHasActivePanorama(false)
+    setActiveHistoryId(null)
+    setIsEditMode(false)
+    setIsExportPanelOpen(false)
+  }, [historyItems.length])
 
   useEffect(() => {
     if (!Array.isArray(pixelateMasks) || pixelateMasks.length === 0) return
@@ -4821,6 +4951,9 @@ function App() {
     },
     [historyItems, homeProjectionFilter, homeDeviceFilter, homeSortOrder, homeFolderFilter],
   )
+  const isLibraryEmpty = historyItems.length === 0
+  const showEmptyLibraryFallback = historyItems.length === 0
+  const hasRenderablePanorama = hasActivePanorama && Boolean(currentUrlRef.current) && Boolean(loadedMetaRef.current)
   const activeHomeIndex = useMemo(
     () => filteredHomeItems.findIndex((item) => item.id === activeHistoryId),
     [filteredHomeItems, activeHistoryId],
@@ -4865,7 +4998,7 @@ function App() {
     }
   }, [historyItems])
 
-  const displayedDbBytes = indexedDbBytes ?? estimatedDbBytes
+  const displayedDbBytes = estimatedDbBytes
 
   const buildBackupPayload = () => ({
     schemaVersion: 1,
@@ -5488,7 +5621,6 @@ function App() {
   const selectedContextFolderLabel = selectedContextFolderPath
     ? `${selectedContextFolder?.rootName || ''}/${selectedContextFolderPath}`
     : selectedContextFolder?.rootName || ''
-  const connectedRootCount = getConnectedRootHandles().length
   const activeContextItem = useMemo(() => {
     if (selectedContextItem) return selectedContextItem
     if (!hasActivePanorama || !activeHistoryId) return null
@@ -5735,7 +5867,7 @@ function App() {
         <button
           type="button"
           className={`toolbar-photo-btn ${isPhotoModeActive ? 'is-active' : ''}`}
-          disabled={!hasActivePanorama}
+          disabled={!hasRenderablePanorama}
           aria-label={t('strings.openPhotoFrame')}
           onClick={togglePhotoFrameMode}
         >
@@ -5744,10 +5876,10 @@ function App() {
         <button
           type="button"
           className={`toolbar-edit-btn ${isEditMode ? 'is-active' : ''}`}
-          disabled={!hasActivePanorama}
+          disabled={!hasRenderablePanorama}
           aria-label={isEditMode ? t('strings.closeEdit') : t('strings.editPanorama')}
           onClick={() => {
-            if (!hasActivePanorama) return
+            if (!hasRenderablePanorama) return
             setIsEditMode((prev) => !prev)
           }}
         >
@@ -5792,7 +5924,22 @@ function App() {
       </p>
       <div className="viewer-wrap">
         <div ref={containerRef} className="viewer" />
-        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && activeGpsCoords && (
+        {showEmptyLibraryFallback && (
+          <div className="empty-library-fallback" onContextMenu={(event) => openContextMenu(event, null, 'home')}>
+            <img
+              src="/empty-library-bg.jpg"
+              alt=""
+              className="empty-library-fallback-bg"
+              draggable={false}
+            />
+            <div className="empty-library-fallback-shade" />
+            <div className="empty-library-fallback-card">
+              <h2>{t('strings.emptyLibraryTitle')}</h2>
+              <p>{t('strings.emptyLibraryHint')}</p>
+            </div>
+          </div>
+        )}
+        {showLocationPanel && showGpsMapOverlay && hasRenderablePanorama && activeGpsCoords && (
           <div className="map-overlay" aria-label="Panorama GPS location">
             <div className="map-overlay-head">
               <span>GPS</span>
@@ -5810,19 +5957,19 @@ function App() {
             </p>
           </div>
         )}
-        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && !activeGpsCoords && (
+        {showLocationPanel && showGpsMapOverlay && hasRenderablePanorama && !activeGpsCoords && (
           <div className="map-overlay map-overlay-empty" aria-live="polite">
             {hasAnyGpsData ? 'No valid GPS coordinates in EXIF.' : 'No GPS data in EXIF.'}
           </div>
         )}
-        {showLocationPanel && hasActivePanorama && panoramaCaptionLines.length > 0 && (
+        {showLocationPanel && hasRenderablePanorama && panoramaCaptionLines.length > 0 && (
           <div className="panorama-caption" aria-live="polite">
             {panoramaCaptionLines.map((line, index) => (
               <div key={`${line}-${index}`}>{line}</div>
             ))}
           </div>
         )}
-        {hasActivePanorama && isEditMode && projectedMaskPreviews.length > 0 && (
+        {hasRenderablePanorama && isEditMode && projectedMaskPreviews.length > 0 && (
           <div className="viewer-mask-preview-layer">
             <svg className="viewer-mask-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
               {projectedMaskPreviews.map((mask) => (
@@ -5863,7 +6010,7 @@ function App() {
             ))}
           </div>
         )}
-        {hasActivePanorama && isMaskDrawMode && (
+        {hasRenderablePanorama && isMaskDrawMode && (
           <div
             className="viewer-mask-overlay"
             onPointerDown={handleViewerMaskPointerDown}
@@ -5892,7 +6039,7 @@ function App() {
             )}
           </div>
         )}
-        {hasActivePanorama && isEditMode && isExportPanelOpen && exportMode === 'photo' && exportFrameRect && (
+        {hasRenderablePanorama && isEditMode && isExportPanelOpen && exportMode === 'photo' && exportFrameRect && (
           <div className="photo-export-overlay" aria-hidden="true">
             <div
               className="photo-export-frame"
@@ -5905,7 +6052,7 @@ function App() {
             />
           </div>
         )}
-        {hasActivePanorama && (
+        {hasRenderablePanorama && (
           <>
             <button
               type="button"
@@ -6357,16 +6504,25 @@ function App() {
             )}
           </>
         )}
-        {!hasActivePanorama && (
+        {(!hasRenderablePanorama || historyItems.length === 0) && (
           <div
             ref={homeOverlayRef}
-            className="home-grid-overlay"
+            className={`home-grid-overlay ${isLibraryEmpty ? 'is-library-empty' : ''}`}
             onContextMenu={(event) => openContextMenu(event, null, 'home')}
           >
             {filteredHomeItems.length === 0 ? (
               <div className="home-empty">
-                <h2>No panoramas for active filter</h2>
-                <p>Change filters in the context menu or add panoramas to the library.</p>
+                {isLibraryEmpty ? (
+                  <>
+                    <h2>{t('strings.emptyLibraryTitle')}</h2>
+                    <p>{t('strings.emptyLibraryHint')}</p>
+                  </>
+                ) : (
+                  <>
+                    <h2>No panoramas for active filter</h2>
+                    <p>Change filters in the context menu or add panoramas to the library.</p>
+                  </>
+                )}
               </div>
             ) : (
               <div className={`home-grid home-grid-${homeTileSize}`}>

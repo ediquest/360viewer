@@ -337,6 +337,74 @@ select {
   cursor: grab;
 }
 
+.empty-library-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: #020617;
+}
+
+.empty-library-fallback-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transform: scale(1.08);
+  animation: empty-library-bg-breathe 16s ease-in-out infinite alternate;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.empty-library-fallback-shade {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.62), rgba(2, 6, 23, 0.82)),
+    radial-gradient(circle at 30% 20%, rgba(125, 211, 252, 0.12), transparent 48%);
+  pointer-events: none;
+}
+
+.empty-library-fallback-card {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 700px);
+  max-width: min(92vw, 700px);
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  background: rgba(2, 6, 23, 0.5);
+  backdrop-filter: blur(2px);
+  text-align: center;
+  color: #cbd5e1;
+}
+
+.empty-library-fallback-card h2,
+.empty-library-fallback-card p {
+  margin: 0;
+}
+
+@keyframes empty-library-bg-breathe {
+  0% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1.14);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-library-fallback-bg {
+    animation: none;
+    transform: scale(1.08);
+  }
+}
+
 .home-grid-overlay {
   position: absolute;
   inset: 0;
@@ -346,6 +414,21 @@ select {
   overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: #22d3ee #0b1220;
+}
+
+.home-grid-overlay.is-library-empty {
+  position: relative;
+  display: grid;
+  place-items: center;
+  background-image:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.62), rgba(2, 6, 23, 0.82)),
+    radial-gradient(circle at 30% 20%, rgba(125, 211, 252, 0.12), transparent 48%),
+    url('/empty-library-bg.jpg');
+  background-size: cover, cover, 130% auto;
+  background-position: center, center, 50% 50%;
+  background-repeat: no-repeat;
+  overflow: hidden;
+  will-change: auto;
 }
 
 .home-grid-overlay::-webkit-scrollbar {
@@ -375,6 +458,20 @@ select {
   text-align: center;
   gap: 0.35rem;
   color: #cbd5e1;
+}
+
+.home-grid-overlay.is-library-empty .home-empty {
+  position: relative;
+  z-index: 1;
+  min-height: auto;
+  width: min(92vw, 700px);
+  max-width: min(92vw, 700px);
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  background: rgba(2, 6, 23, 0.5);
+  backdrop-filter: blur(2px);
 }
 
 .home-empty h2,
