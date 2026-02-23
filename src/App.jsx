@@ -1716,8 +1716,9 @@ function App() {
 
   const isPanoramaCandidateWithMetadata = (width, height, metadata) => {
     if (hasPanoramaMetadata(metadata)) return true
+    if (projectionMode === 'spherical') return isNearSphericalRatio(width, height)
     if (projectionMode === 'cylindrical') return isPanoramaCandidate(width, height)
-    return isNearSphericalRatio(width, height)
+    return isNearSphericalRatio(width, height) || isPanoramaCandidate(width, height)
   }
 
   const ingestFileToHistory = async (file, options = {}) => {
@@ -4058,7 +4059,13 @@ function App() {
                     className={`home-tile home-tile-${homeTileSize} ${hasHomeSelection ? 'has-selection-mode' : ''} ${
                       selectedHomeIdSet.has(item.id) ? 'is-selected' : ''
                     }`}
-                    onClick={() => openPanoramaFromLibrary(item)}
+                    onClick={() => {
+                      if (hasHomeSelection) {
+                        toggleHomeSelection(item.id, !selectedHomeIdSet.has(item.id))
+                        return
+                      }
+                      openPanoramaFromLibrary(item)
+                    }}
                     onContextMenu={(event) => openContextMenu(event, item.id, 'home')}
                     onDragStart={(event) => event.preventDefault()}
                     title={`${item.name} (${item.width}x${item.height})`}
@@ -4072,7 +4079,9 @@ function App() {
                         type="checkbox"
                         checked={selectedHomeIdSet.has(item.id)}
                         onChange={(event) => toggleHomeSelection(item.id, event.target.checked)}
+                        aria-label={`Select ${item.name}`}
                       />
+                      <span className="home-tile-select-mark" aria-hidden="true" />
                     </label>
                     {item.thumbDataUrl ? (
                       <img src={item.thumbDataUrl} alt={item.name} className="home-tile-thumb" draggable={false} />

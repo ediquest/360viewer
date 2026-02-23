@@ -134,11 +134,12 @@ const isNearSphericalRatio = (width, height) => {
 
 const isPanoramaCandidate = (width, height, metadata, options) => {
   if (hasPanoramaMetadata(metadata)) return true
-  if ((options?.projectionMode || 'auto') === 'cylindrical') {
-    const ratio = height > 0 ? width / height : 0
-    return ratio >= (options?.minPanoramaRatio || 1.95)
-  }
-  return isNearSphericalRatio(width, height)
+  const projectionMode = options?.projectionMode || 'auto'
+  const ratio = height > 0 ? width / height : 0
+  const minPanoramaRatio = options?.minPanoramaRatio || 1.95
+  if (projectionMode === 'spherical') return isNearSphericalRatio(width, height)
+  if (projectionMode === 'cylindrical') return ratio >= minPanoramaRatio
+  return isNearSphericalRatio(width, height) || ratio >= minPanoramaRatio
 }
 
 const buildProjection = (width, height, metadata, projectionMode) => {
