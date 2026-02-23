@@ -1,6 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import * as exifr from 'exifr'
+import L from 'leaflet'
+import piexif from 'piexifjs'
+import 'leaflet/dist/leaflet.css'
 import './App.css'
 
 const DB_NAME = 'viewer360-db'
@@ -72,6 +75,7 @@ const I18N = {
       hideGpsMap: 'Hide GPS mini-map',
       showGpsMap: 'Show GPS mini-map',
       cancelScan: 'Cancel scan',
+      cancel: 'Cancel',
       scanCanceled: 'Scan canceled by user.',
       locationResolving: 'Resolving location...',
       unknownProjection: 'Unknown',
@@ -84,6 +88,37 @@ const I18N = {
       collapseAllFolders: 'Collapse all folders',
       expandAllFolders: 'Expand all folders',
       clearFolderFilter: 'Clear folder filter',
+      editPanorama: 'Edit',
+      closeEdit: 'Close edit',
+      editPanelTitle: 'Panorama edit',
+      pickGpsOnMap: 'Pick GPS on map',
+      pickGpsHint: 'Click a point on the map to set coordinates.',
+      gpsFromPhoto: 'GPS from photo',
+      gpsFromPhotoHint: 'Drop a photo with EXIF GPS or click to choose.',
+      removeGps: 'Remove GPS',
+      exportEditedJpeg: 'Export edited JPG',
+      lat: 'Lat',
+      lon: 'Lon',
+      gpsSaved: 'GPS saved in editor.',
+      gpsCopiedFromPhoto: 'GPS copied from reference photo.',
+      noGpsInPhoto: 'No GPS found in reference photo.',
+      editedExportDone: 'Edited panorama exported as JPG.',
+      openMaskEditor: 'Mask areas (pixelate)',
+      clearMasks: 'Clear masks',
+      maskEditorTitle: 'Mask editor',
+      maskEditorHint: 'Draw masks over sensitive areas. Effect is applied on export.',
+      maskCount: 'Masks',
+      drawOnPanorama: 'Add mask',
+      stopDrawing: 'Stop drawing',
+      maskEffect: 'Mask effect',
+      maskEffectBlur: 'Blur',
+      maskEffectPixelate: 'Pixelate',
+      maskStrength: 'Strength',
+      editSectionGps: 'GPS',
+      editSectionMasks: 'Masks',
+      gpsOverwriteTitle: 'Replace existing GPS?',
+      gpsOverwriteMessage: 'This panorama already has GPS coordinates. Do you want to replace them?',
+      replaceGps: 'Replace GPS',
     },
   },
   pl: {
@@ -133,6 +168,7 @@ const I18N = {
       hideGpsMap: 'Ukryj mapke GPS',
       showGpsMap: 'Pokaz mapke GPS',
       cancelScan: 'Anuluj skanowanie',
+      cancel: 'Anuluj',
       scanCanceled: 'Skanowanie anulowane przez uzytkownika.',
       locationResolving: 'Ustalanie miejscowosci...',
       unknownProjection: 'Nieznany',
@@ -145,6 +181,37 @@ const I18N = {
       collapseAllFolders: 'Zwin wszystkie foldery',
       expandAllFolders: 'Rozwin wszystkie foldery',
       clearFolderFilter: 'Wyczysc filtr folderu',
+      editPanorama: 'Edycja',
+      closeEdit: 'Zamknij edycje',
+      editPanelTitle: 'Edycja panoramy',
+      pickGpsOnMap: 'Wybierz GPS na mapie',
+      pickGpsHint: 'Kliknij punkt na mapie, aby ustawic wspolrzedne.',
+      gpsFromPhoto: 'GPS ze zdjecia',
+      gpsFromPhotoHint: 'Upusc zdjecie z EXIF GPS lub kliknij, aby wybrac.',
+      removeGps: 'Usun GPS',
+      exportEditedJpeg: 'Eksportuj edytowany JPG',
+      lat: 'Szer',
+      lon: 'Dlug',
+      gpsSaved: 'GPS zapisany w edycji.',
+      gpsCopiedFromPhoto: 'GPS skopiowany ze zdjecia referencyjnego.',
+      noGpsInPhoto: 'Brak GPS w zdjeciu referencyjnym.',
+      editedExportDone: 'Wyeksportowano edytowana panorame JPG.',
+      openMaskEditor: 'Maskuj obszary (pixelate)',
+      clearMasks: 'Wyczysc maski',
+      maskEditorTitle: 'Edytor masek',
+      maskEditorHint: 'Rysuj maski na obszarach wrazliwych. Efekt zostanie nalozony przy eksporcie.',
+      maskCount: 'Maski',
+      drawOnPanorama: 'Dodaj maske',
+      stopDrawing: 'Zakoncz rysowanie',
+      maskEffect: 'Efekt maski',
+      maskEffectBlur: 'Rozmycie',
+      maskEffectPixelate: 'Pikselizacja',
+      maskStrength: 'Sila',
+      editSectionGps: 'GPS',
+      editSectionMasks: 'Maski',
+      gpsOverwriteTitle: 'Nadpisac istniejacy GPS?',
+      gpsOverwriteMessage: 'Ta panorama ma juz wspolrzedne GPS. Czy chcesz je zastapic?',
+      replaceGps: 'Nadpisz GPS',
     },
   },
 }
@@ -300,6 +367,242 @@ const hasGpsMetadata = (metadata) => {
   return Object.keys(metadata).some((key) => /gps|latitude|longitude/i.test(key))
 }
 
+const sanitizeGpsCoords = (coords) => {
+  if (!coords || typeof coords !== 'object') return null
+  const lat = Number(coords.lat)
+  const lon = Number(coords.lon)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null
+  return { lat, lon }
+}
+
+const decimalToExifDms = (value) => {
+  const absolute = Math.abs(Number(value) || 0)
+  const degrees = Math.floor(absolute)
+  const minutesFloat = (absolute - degrees) * 60
+  const minutes = Math.floor(minutesFloat)
+  const seconds = (minutesFloat - minutes) * 60
+  return [
+    [degrees, 1],
+    [minutes, 1],
+    [Math.round(seconds * 10000), 10000],
+  ]
+}
+
+const attachGpsToJpegDataUrl = (jpegDataUrl, coords) => {
+  const safe = sanitizeGpsCoords(coords)
+  if (!safe) return jpegDataUrl
+
+  const gps = {
+    [piexif.GPSIFD.GPSLatitudeRef]: safe.lat >= 0 ? 'N' : 'S',
+    [piexif.GPSIFD.GPSLatitude]: decimalToExifDms(safe.lat),
+    [piexif.GPSIFD.GPSLongitudeRef]: safe.lon >= 0 ? 'E' : 'W',
+    [piexif.GPSIFD.GPSLongitude]: decimalToExifDms(safe.lon),
+  }
+  const exifObj = {
+    '0th': {},
+    Exif: {},
+    GPS: gps,
+    Interop: {},
+    '1st': {},
+    thumbnail: null,
+  }
+  const exifBytes = piexif.dump(exifObj)
+  return piexif.insert(exifBytes, jpegDataUrl)
+}
+
+const applyPixelateToCanvasRegion = (canvas, ctx, x, y, width, height, pixelSize = 24) => {
+  const sx = Math.max(0, Math.floor(x))
+  const sy = Math.max(0, Math.floor(y))
+  const sw = Math.max(1, Math.min(canvas.width - sx, Math.floor(width)))
+  const sh = Math.max(1, Math.min(canvas.height - sy, Math.floor(height)))
+  if (sw <= 0 || sh <= 0) return
+
+  const imageData = ctx.getImageData(sx, sy, sw, sh)
+  const data = imageData.data
+  const block = Math.max(6, Math.floor(pixelSize))
+
+  for (let by = 0; by < sh; by += block) {
+    for (let bx = 0; bx < sw; bx += block) {
+      const bw = Math.min(block, sw - bx)
+      const bh = Math.min(block, sh - by)
+      let r = 0
+      let g = 0
+      let b = 0
+      let a = 0
+      let count = 0
+
+      for (let yy = 0; yy < bh; yy += 1) {
+        for (let xx = 0; xx < bw; xx += 1) {
+          const idx = ((by + yy) * sw + (bx + xx)) * 4
+          r += data[idx]
+          g += data[idx + 1]
+          b += data[idx + 2]
+          a += data[idx + 3]
+          count += 1
+        }
+      }
+      if (count === 0) continue
+      const rr = Math.round(r / count)
+      const gg = Math.round(g / count)
+      const bb = Math.round(b / count)
+      const aa = Math.round(a / count)
+
+      for (let yy = 0; yy < bh; yy += 1) {
+        for (let xx = 0; xx < bw; xx += 1) {
+          const idx = ((by + yy) * sw + (bx + xx)) * 4
+          data[idx] = rr
+          data[idx + 1] = gg
+          data[idx + 2] = bb
+          data[idx + 3] = aa
+        }
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, sx, sy)
+}
+
+const applyPixelateToPolygon = (canvas, ctx, pointsPx, pixelSize = 24) => {
+  if (!Array.isArray(pointsPx) || pointsPx.length < 3) return
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const p of pointsPx) {
+    const x = Number(p?.x)
+    const y = Number(p?.y)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    if (x < minX) minX = x
+    if (y < minY) minY = y
+    if (x > maxX) maxX = x
+    if (y > maxY) maxY = y
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return
+  const bx = Math.max(0, Math.floor(minX))
+  const by = Math.max(0, Math.floor(minY))
+  const bw = Math.max(1, Math.ceil(maxX - minX))
+  const bh = Math.max(1, Math.ceil(maxY - minY))
+
+  const tmp = document.createElement('canvas')
+  tmp.width = canvas.width
+  tmp.height = canvas.height
+  const tctx = tmp.getContext('2d', { alpha: false })
+  if (!tctx) return
+  tctx.drawImage(canvas, 0, 0)
+  applyPixelateToCanvasRegion(tmp, tctx, bx, by, bw, bh, pixelSize)
+
+  ctx.save()
+  ctx.beginPath()
+  pointsPx.forEach((p, idx) => {
+    if (idx === 0) ctx.moveTo(p.x, p.y)
+    else ctx.lineTo(p.x, p.y)
+  })
+  ctx.closePath()
+  ctx.clip()
+  ctx.drawImage(tmp, 0, 0)
+  ctx.restore()
+}
+
+const applyBlurToPolygon = (canvas, ctx, pointsPx, blurPx = 20) => {
+  if (!Array.isArray(pointsPx) || pointsPx.length < 3) return
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const p of pointsPx) {
+    const x = Number(p?.x)
+    const y = Number(p?.y)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    if (x < minX) minX = x
+    if (y < minY) minY = y
+    if (x > maxX) maxX = x
+    if (y > maxY) maxY = y
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return
+  const bx = Math.floor(minX)
+  const by = Math.floor(minY)
+  const bw = Math.max(1, Math.ceil(maxX - minX))
+  const bh = Math.max(1, Math.ceil(maxY - minY))
+  const blur = Math.max(2, Math.floor(blurPx))
+  const feather = Math.max(2, Math.floor(blur * 0.65))
+  const pad = Math.max(4, Math.ceil(blur * 2 + feather * 2))
+
+  const ex = Math.max(0, bx - pad)
+  const ey = Math.max(0, by - pad)
+  const ew = Math.max(1, Math.min(canvas.width - ex, bw + pad * 2))
+  const eh = Math.max(1, Math.min(canvas.height - ey, bh + pad * 2))
+
+  const src = document.createElement('canvas')
+  src.width = ew
+  src.height = eh
+  const sctx = src.getContext('2d', { alpha: false })
+  if (!sctx) return
+  sctx.drawImage(canvas, ex, ey, ew, eh, 0, 0, ew, eh)
+
+  const blurred = document.createElement('canvas')
+  blurred.width = ew
+  blurred.height = eh
+  const bctx = blurred.getContext('2d', { alpha: false })
+  if (!bctx) return
+  bctx.filter = `blur(${blur}px)`
+  bctx.drawImage(src, 0, 0)
+  bctx.filter = 'none'
+
+  const mask = document.createElement('canvas')
+  mask.width = ew
+  mask.height = eh
+  const mctx = mask.getContext('2d')
+  if (!mctx) return
+  mctx.clearRect(0, 0, ew, eh)
+  mctx.fillStyle = '#fff'
+  mctx.beginPath()
+  pointsPx.forEach((p, idx) => {
+    const lx = p.x - ex
+    const ly = p.y - ey
+    if (idx === 0) mctx.moveTo(lx, ly)
+    else mctx.lineTo(lx, ly)
+  })
+  mctx.closePath()
+  mctx.fill()
+
+  const featheredMask = document.createElement('canvas')
+  featheredMask.width = ew
+  featheredMask.height = eh
+  const fmctx = featheredMask.getContext('2d')
+  if (!fmctx) return
+  fmctx.filter = `blur(${feather}px)`
+  fmctx.drawImage(mask, 0, 0)
+  fmctx.filter = 'none'
+
+  const composed = document.createElement('canvas')
+  composed.width = ew
+  composed.height = eh
+  const cctx = composed.getContext('2d', { alpha: true })
+  if (!cctx) return
+  cctx.drawImage(blurred, 0, 0)
+  cctx.globalCompositeOperation = 'destination-in'
+  cctx.drawImage(featheredMask, 0, 0)
+  cctx.globalCompositeOperation = 'source-over'
+
+  ctx.drawImage(composed, ex, ey)
+}
+
+const applyBlurToCanvasRegion = (canvas, ctx, x, y, width, height, blurPx = 20) => {
+  const sx = Math.max(0, Math.floor(x))
+  const sy = Math.max(0, Math.floor(y))
+  const sw = Math.max(1, Math.min(canvas.width - sx, Math.floor(width)))
+  const sh = Math.max(1, Math.min(canvas.height - sy, Math.floor(height)))
+  if (sw <= 0 || sh <= 0) return
+  const rectPoints = [
+    { x: sx, y: sy },
+    { x: sx + sw, y: sy },
+    { x: sx + sw, y: sy + sh },
+    { x: sx, y: sy + sh },
+  ]
+  applyBlurToPolygon(canvas, ctx, rectPoints, blurPx)
+}
+
 const openDb = () =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
@@ -432,7 +735,7 @@ function AnimatedDropdown({ label, value, options, onChange }) {
         onClick={() => setIsOpen((prev) => !prev)}
       >
         <span className="toolbar-dropdown-value">{selected?.label ?? ''}</span>
-        <span className={`toolbar-dropdown-caret ${isOpen ? 'is-open' : ''}`}>▾</span>
+        <span className={`toolbar-dropdown-caret ${isOpen ? 'is-open' : ''}`}>v</span>
       </button>
       <div className="toolbar-dropdown-menu" role="listbox" aria-label={label}>
         {options.map((option) => (
@@ -458,9 +761,18 @@ function App() {
   const inputRef = useRef(null)
   const folderInputRef = useRef(null)
   const backupInputRef = useRef(null)
+  const gpsPhotoInputRef = useRef(null)
   const currentUrlRef = useRef(null)
   const loadedImageRef = useRef(null)
   const loadedMetaRef = useRef(null)
+  const gpsMapContainerRef = useRef(null)
+  const gpsMapRef = useRef(null)
+  const gpsMapMarkerRef = useRef(null)
+  const maskSurfaceRef = useRef(null)
+  const maskPointerRef = useRef(null)
+  const viewerMaskDragRef = useRef(null)
+  const raycasterRef = useRef(new THREE.Raycaster())
+  const ndcPointerRef = useRef(new THREE.Vector2())
 
   const rendererRef = useRef(null)
   const sceneRef = useRef(null)
@@ -480,10 +792,12 @@ function App() {
   const scanPromiseResolveRef = useRef(null)
   const scanCancelledRef = useRef(false)
   const unknownRootFastRepairRef = useRef(new Map())
+  const transientHistoryFilesRef = useRef(new Map())
   const dragDepthRef = useRef(0)
   const backupDragDepthRef = useRef(0)
   const homeScrollTopRef = useRef(0)
   const shouldRestoreHomeScrollRef = useRef(false)
+  const pendingGpsOverrideActionRef = useRef(null)
 
   const dragStateRef = useRef({
     isPointerDown: false,
@@ -514,6 +828,22 @@ function App() {
   const [showTelemetry, setShowTelemetry] = useState(true)
   const [showLocationPanel, setShowLocationPanel] = useState(true)
   const [showGpsMapOverlay, setShowGpsMapOverlay] = useState(true)
+  const [isEditMode, setIsEditMode] = useState(false)
+  const [isMapPickerOpen, setIsMapPickerOpen] = useState(false)
+  const [editedGpsCoords, setEditedGpsCoords] = useState(null)
+  const [hasGpsOverride, setHasGpsOverride] = useState(false)
+  const [latInput, setLatInput] = useState('')
+  const [lonInput, setLonInput] = useState('')
+  const [isGpsPhotoDragging, setIsGpsPhotoDragging] = useState(false)
+  const [isMaskEditorOpen, setIsMaskEditorOpen] = useState(false)
+  const [pixelateMasks, setPixelateMasks] = useState([])
+  const [maskEffectMode, setMaskEffectMode] = useState('blur')
+  const [maskEffectStrength, setMaskEffectStrength] = useState(42)
+  const [maskDraft, setMaskDraft] = useState(null)
+  const [isMaskDrawMode, setIsMaskDrawMode] = useState(false)
+  const [viewerMaskDraft, setViewerMaskDraft] = useState(null)
+  const [maskPreviewTick, setMaskPreviewTick] = useState(0)
+  const [isGpsOverrideConfirmOpen, setIsGpsOverrideConfirmOpen] = useState(false)
   const [telemetry, setTelemetry] = useState({ yaw: 0, pitch: 0, fov: SPHERICAL_DEFAULT_FOV })
   const [historyItems, setHistoryItems] = useState([])
   const [hasActivePanorama, setHasActivePanorama] = useState(false)
@@ -597,6 +927,13 @@ function App() {
       { value: 'q2048', label: qualityLabels.q2048 },
     ],
     [qualityLabels],
+  )
+  const maskEffectOptions = useMemo(
+    () => [
+      { value: 'blur', label: t('strings.maskEffectBlur') },
+      { value: 'pixelate', label: t('strings.maskEffectPixelate') },
+    ],
+    [language],
   )
 
   useEffect(() => {
@@ -1656,6 +1993,7 @@ function App() {
 
     const createdAt = extractCreatedAt(file, metadata)
     const device = extractDeviceLabel(metadata)
+    const normalizedRelativePath = normalizeRelativePath(relativePath)
     const entry = {
       id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       name: file.name,
@@ -1666,12 +2004,21 @@ function App() {
       createdAt,
       dateKey: getDateGroupingKey(createdAt),
       device,
-      relativePath: normalizeRelativePath(relativePath),
+      relativePath: normalizedRelativePath,
       rootName: rootName ? String(rootName) : '',
       thumbDataUrl: buildThumbnailDataUrl(image),
     }
 
     await dbPut(db, PANORAMAS_STORE, entry)
+    if (!normalizedRelativePath && file) {
+      const cache = transientHistoryFilesRef.current
+      cache.set(entry.id, file)
+      while (cache.size > 64) {
+        const oldestKey = cache.keys().next().value
+        if (!oldestKey) break
+        cache.delete(oldestKey)
+      }
+    }
     setHistoryItems((prev) => [entry, ...prev])
     return { added: true, entry }
   }
@@ -1800,8 +2147,12 @@ function App() {
           jfif: true,
         })
         setExifData(parsed || {})
+        setEditedGpsCoords(sanitizeGpsCoords(extractGpsCoords(parsed)))
+        setHasGpsOverride(false)
       } catch {
         setExifError('Could not read EXIF.')
+        setEditedGpsCoords(null)
+        setHasGpsOverride(false)
       } finally {
         setIsExifLoading(false)
       }
@@ -1859,6 +2210,10 @@ function App() {
       currentUrlRef.current = tmpUrl
       loadedImageRef.current = image
       loadedMetaRef.current = { name: file.name, width, height }
+      setIsMaskEditorOpen(false)
+      setIsMaskDrawMode(false)
+      setPixelateMasks([])
+      setMaskDraft(null)
 
       updateStatusAfterTexture(file.name, width, height, drawWidth, drawHeight, requestedMax, resolvedProjection)
       setHasActivePanorama(true)
@@ -2154,6 +2509,25 @@ function App() {
       projection: item.projection,
       hasFingerprint: Boolean(item.fingerprint),
     })
+
+    if (!item?.relativePath) {
+      const transientFile = transientHistoryFilesRef.current.get(item.id)
+      if (transientFile) {
+        const openedWithStoredProjection = await processPanoramaFile(transientFile, {
+          persistHistory: false,
+          forcedProjection: item.projection || null,
+          loadingText: 'Loading panorama...',
+        })
+        if (openedWithStoredProjection) return
+        const openedAuto = await processPanoramaFile(transientFile, {
+          persistHistory: false,
+          forcedProjection: null,
+          loadingText: 'Loading panorama...',
+        })
+        if (openedAuto) return
+      }
+    }
+
     const connectedRoots = getConnectedRootHandles()
     if (connectedRoots.length === 0) {
       debugOpenHistory('openHistoryItem:abort no root folder')
@@ -2448,6 +2822,9 @@ function App() {
     if (db) {
       await Promise.all(uniqueIds.map((id) => dbDelete(db, PANORAMAS_STORE, id).catch(() => {})))
     }
+    for (const id of uniqueIds) {
+      transientHistoryFilesRef.current.delete(id)
+    }
 
     setHistoryItems((prev) => prev.filter((item) => !removeSet.has(item.id)))
     setSelectedHomeIds((prev) => prev.filter((id) => !removeSet.has(id)))
@@ -2648,6 +3025,7 @@ function App() {
     if (db) {
       await dbClear(db, PANORAMAS_STORE).catch(() => {})
     }
+    transientHistoryFilesRef.current.clear()
     setHistoryItems([])
     setSelectedHomeIds([])
     setCollapsedGroups({})
@@ -2758,18 +3136,24 @@ function App() {
   const shownExifEntries = groupedExifEntries[exifTab] || groupedExifEntries.all
   const visibleExifTabs = EXIF_TAB_ORDER.filter((tabId) => tabId === 'all' || (groupedExifEntries[tabId] || []).length > 0)
   const gpsCoords = useMemo(() => extractGpsCoords(exifData), [exifData])
+  const gpsSavedMessage = t('strings.gpsSaved')
+  const activeGpsCoords = useMemo(
+    () => (hasGpsOverride ? sanitizeGpsCoords(editedGpsCoords) : sanitizeGpsCoords(gpsCoords)),
+    [hasGpsOverride, editedGpsCoords, gpsCoords],
+  )
   const hasAnyGpsData = useMemo(() => hasGpsMetadata(exifData), [exifData])
+  const hasOriginalGpsCoords = useMemo(() => Boolean(sanitizeGpsCoords(gpsCoords)), [gpsCoords])
   const mapSrc = useMemo(() => {
-    if (!gpsCoords) return ''
+    if (!activeGpsCoords) return ''
     const deltaLat = 0.003
     const deltaLon = 0.006
-    const left = gpsCoords.lon - deltaLon
-    const right = gpsCoords.lon + deltaLon
-    const top = gpsCoords.lat + deltaLat
-    const bottom = gpsCoords.lat - deltaLat
+    const left = activeGpsCoords.lon - deltaLon
+    const right = activeGpsCoords.lon + deltaLon
+    const top = activeGpsCoords.lat + deltaLat
+    const bottom = activeGpsCoords.lat - deltaLat
     const bbox = `${left},${bottom},${right},${top}`
-    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${gpsCoords.lat}%2C${gpsCoords.lon}`
-  }, [gpsCoords])
+    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${activeGpsCoords.lat}%2C${activeGpsCoords.lon}`
+  }, [activeGpsCoords])
   const panoramaDateLabel = useMemo(() => {
     if (!activeCapturedAt) return ''
     const formatted = formatShortDateTime(activeCapturedAt)
@@ -2777,23 +3161,34 @@ function App() {
   }, [activeCapturedAt])
   const panoramaCaptionLines = useMemo(() => {
     if (!hasActivePanorama) return []
-    if (!gpsCoords) return panoramaDateLabel ? [panoramaDateLabel] : []
+    if (!activeGpsCoords) return panoramaDateLabel ? [panoramaDateLabel] : []
     const locationLine = resolvedLocality || (isResolvingLocality ? t('strings.locationResolving') : '')
     if (locationLine && panoramaDateLabel) return [locationLine, panoramaDateLabel]
     if (locationLine) return [locationLine]
     if (panoramaDateLabel) return [panoramaDateLabel]
     return []
-  }, [hasActivePanorama, gpsCoords, resolvedLocality, isResolvingLocality, panoramaDateLabel])
+  }, [hasActivePanorama, activeGpsCoords, resolvedLocality, isResolvingLocality, panoramaDateLabel, t])
 
   useEffect(() => {
-    if (!hasActivePanorama || !gpsCoords) {
+    const safe = sanitizeGpsCoords(activeGpsCoords)
+    if (!safe) {
+      setLatInput('')
+      setLonInput('')
+      return
+    }
+    setLatInput(String(safe.lat.toFixed(6)))
+    setLonInput(String(safe.lon.toFixed(6)))
+  }, [activeHistoryId, activeGpsCoords])
+
+  useEffect(() => {
+    if (!hasActivePanorama || !activeGpsCoords) {
       setResolvedLocality('')
       setIsResolvingLocality(false)
       return
     }
 
-    const lat = Number(gpsCoords.lat)
-    const lon = Number(gpsCoords.lon)
+    const lat = Number(activeGpsCoords.lat)
+    const lon = Number(activeGpsCoords.lon)
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       setResolvedLocality('')
       setIsResolvingLocality(false)
@@ -2872,7 +3267,557 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [hasActivePanorama, gpsCoords, language])
+  }, [hasActivePanorama, activeGpsCoords, language])
+
+  useEffect(() => {
+    if (!hasActivePanorama) {
+      setIsEditMode(false)
+      setIsMapPickerOpen(false)
+    }
+  }, [hasActivePanorama])
+
+  useEffect(() => {
+    if (!hasActivePanorama) {
+      setIsGpsOverrideConfirmOpen(false)
+      pendingGpsOverrideActionRef.current = null
+    }
+  }, [hasActivePanorama])
+
+  useEffect(() => {
+    if (!Array.isArray(pixelateMasks) || pixelateMasks.length === 0) return
+    setPixelateMasks((prev) =>
+      prev.map((mask) => {
+        if (!mask || typeof mask !== 'object') return mask
+        if (mask.version === 2) return mask
+        const y = Number(mask.y) || 0
+        const h = Number(mask.height) || 0
+        return {
+          ...mask,
+          y: Math.max(0, Math.min(1, 1 - y - h)),
+          version: 2,
+        }
+      }),
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!isMapPickerOpen || !gpsMapContainerRef.current) return undefined
+    const current = sanitizeGpsCoords(activeGpsCoords) || { lat: 52.2297, lon: 21.0122 }
+
+    if (!gpsMapRef.current) {
+      const map = L.map(gpsMapContainerRef.current, {
+        zoomControl: true,
+        attributionControl: true,
+      }).setView([current.lat, current.lon], 14)
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors',
+      }).addTo(map)
+      map.on('click', (event) => {
+        setEditedGpsCoords({ lat: event.latlng.lat, lon: event.latlng.lng })
+        setHasGpsOverride(true)
+        setStatus(gpsSavedMessage)
+      })
+      gpsMapRef.current = map
+    }
+
+    const map = gpsMapRef.current
+    map.invalidateSize()
+    map.setView([current.lat, current.lon], 14)
+
+    if (!gpsMapMarkerRef.current) {
+      gpsMapMarkerRef.current = L.circleMarker([current.lat, current.lon], {
+        radius: 8,
+        color: '#06b6d4',
+        weight: 2,
+        fillColor: '#22d3ee',
+        fillOpacity: 0.5,
+      }).addTo(map)
+    } else {
+      gpsMapMarkerRef.current.setLatLng([current.lat, current.lon])
+    }
+    return undefined
+  }, [isMapPickerOpen, activeGpsCoords, gpsSavedMessage])
+
+  useEffect(() => {
+    if (!gpsMapMarkerRef.current) return
+    const safe = sanitizeGpsCoords(activeGpsCoords)
+    if (!safe) return
+    gpsMapMarkerRef.current.setLatLng([safe.lat, safe.lon])
+  }, [activeGpsCoords])
+
+  useEffect(() => {
+    if (isMapPickerOpen) return
+    if (gpsMapRef.current) {
+      gpsMapRef.current.remove()
+      gpsMapRef.current = null
+      gpsMapMarkerRef.current = null
+    }
+  }, [isMapPickerOpen])
+
+  const closeGpsOverrideConfirm = () => {
+    setIsGpsOverrideConfirmOpen(false)
+    pendingGpsOverrideActionRef.current = null
+  }
+
+  const runWithGpsOverrideGuard = (action) => {
+    if (typeof action !== 'function') return
+    if (hasOriginalGpsCoords && !hasGpsOverride) {
+      pendingGpsOverrideActionRef.current = action
+      setIsGpsOverrideConfirmOpen(true)
+      return
+    }
+    action()
+  }
+
+  const confirmGpsOverride = () => {
+    const action = pendingGpsOverrideActionRef.current
+    pendingGpsOverrideActionRef.current = null
+    setIsGpsOverrideConfirmOpen(false)
+    if (typeof action === 'function') action()
+  }
+
+  const applyManualGpsInputs = () => {
+    const lat = Number(String(latInput).replace(',', '.'))
+    const lon = Number(String(lonInput).replace(',', '.'))
+    const safe = sanitizeGpsCoords({ lat, lon })
+    if (!safe) return
+    runWithGpsOverrideGuard(() => {
+      setEditedGpsCoords(safe)
+      setHasGpsOverride(true)
+      setStatus(t('strings.gpsSaved'))
+    })
+  }
+
+  const applyGpsFromReferencePhoto = async (file) => {
+    if (!file || !file.type?.startsWith('image/')) return
+    let parsed = null
+    try {
+      parsed = await exifr.parse(file, {
+        tiff: true,
+        exif: true,
+        gps: true,
+        xmp: true,
+      })
+    } catch {
+      parsed = null
+    }
+    const coords = sanitizeGpsCoords(extractGpsCoords(parsed))
+    if (!coords) {
+      setStatus(t('strings.noGpsInPhoto'))
+      return
+    }
+    runWithGpsOverrideGuard(() => {
+      setEditedGpsCoords(coords)
+      setHasGpsOverride(true)
+      setStatus(t('strings.gpsCopiedFromPhoto'))
+    })
+  }
+
+  const normalizeMaskRect = (x1, y1, x2, y2) => {
+    const left = Math.max(0, Math.min(x1, x2))
+    const top = Math.max(0, Math.min(y1, y2))
+    const right = Math.min(1, Math.max(x1, x2))
+    const bottom = Math.min(1, Math.max(y1, y2))
+    const width = Math.max(0, right - left)
+    const height = Math.max(0, bottom - top)
+    return { x: left, y: top, width, height }
+  }
+
+  const getMaskPointFromEvent = (event) => {
+    const el = maskSurfaceRef.current
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    const x = (event.clientX - rect.left) / rect.width
+    const y = (event.clientY - rect.top) / rect.height
+    return {
+      x: Math.max(0, Math.min(1, x)),
+      y: Math.max(0, Math.min(1, y)),
+    }
+  }
+
+  const handleMaskPointerDown = (event) => {
+    if (event.button !== 0) return
+    const point = getMaskPointFromEvent(event)
+    if (!point) return
+    event.preventDefault()
+    maskPointerRef.current = point
+    setMaskDraft({ x: point.x, y: point.y, width: 0, height: 0 })
+  }
+
+  const handleMaskPointerMove = (event) => {
+    if (!maskPointerRef.current) return
+    const point = getMaskPointFromEvent(event)
+    if (!point) return
+    event.preventDefault()
+    const rect = normalizeMaskRect(maskPointerRef.current.x, maskPointerRef.current.y, point.x, point.y)
+    setMaskDraft(rect)
+  }
+
+  const commitMaskDraft = (event) => {
+    if (!maskPointerRef.current) return
+    const point = getMaskPointFromEvent(event)
+    const start = maskPointerRef.current
+    maskPointerRef.current = null
+    if (!point) {
+      setMaskDraft(null)
+      return
+    }
+    const rect = normalizeMaskRect(start.x, start.y, point.x, point.y)
+    setMaskDraft(null)
+    if (rect.width < 0.004 || rect.height < 0.004) return
+    const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setPixelateMasks((prev) => [...prev, { id, ...rect }])
+  }
+
+  const removeMask = (id) => {
+    setPixelateMasks((prev) => prev.filter((mask) => mask.id !== id))
+  }
+
+  const getUvAtClientPosition = (clientX, clientY) => {
+    const renderer = rendererRef.current
+    const camera = cameraRef.current
+    const mesh = meshRef.current
+    if (!renderer || !camera || !mesh) return null
+    const rect = renderer.domElement.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1
+    const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1)
+    ndcPointerRef.current.set(ndcX, ndcY)
+    raycasterRef.current.setFromCamera(ndcPointerRef.current, camera)
+    const intersections = raycasterRef.current.intersectObject(mesh, false)
+    const uv = intersections?.[0]?.uv
+    if (!uv) return null
+    return {
+      u: ((Number(uv.x) % 1) + 1) % 1,
+      v: Math.max(0, Math.min(1, Number(uv.y))),
+    }
+  }
+
+  const addMaskFromUvPair = (startUv, endUv) => {
+    if (!startUv || !endUv) return
+    let u1 = Number(startUv.u)
+    let u2 = Number(endUv.u)
+    const v1 = Number(startUv.v)
+    const v2 = Number(endUv.v)
+    if (!Number.isFinite(u1) || !Number.isFinite(u2) || !Number.isFinite(v1) || !Number.isFinite(v2)) return
+
+    if (Math.abs(u2 - u1) > 0.5) {
+      if (u1 < u2) u1 += 1
+      else u2 += 1
+    }
+    const left = Math.min(u1, u2)
+    const right = Math.max(u1, u2)
+    const imageV1 = 1 - v1
+    const imageV2 = 1 - v2
+    const top = Math.max(0, Math.min(imageV1, imageV2))
+    const bottom = Math.min(1, Math.max(imageV1, imageV2))
+    const width = right - left
+    const height = bottom - top
+    if (width < 0.002 || height < 0.002) return
+
+    const normalizedLeft = ((left % 1) + 1) % 1
+    const idBase = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    if (normalizedLeft + width <= 1) {
+      setPixelateMasks((prev) => [...prev, { id: idBase, x: normalizedLeft, y: top, width, height, version: 2 }])
+      return
+    }
+
+    const firstWidth = 1 - normalizedLeft
+    const secondWidth = width - firstWidth
+    setPixelateMasks((prev) => [
+      ...prev,
+      { id: `${idBase}-a`, x: normalizedLeft, y: top, width: firstWidth, height, version: 2 },
+      { id: `${idBase}-b`, x: 0, y: top, width: secondWidth, height, version: 2 },
+    ])
+  }
+
+  const handleViewerMaskPointerDown = (event) => {
+    if (!isMaskDrawMode || event.button !== 0) return
+    const uv = getUvAtClientPosition(event.clientX, event.clientY)
+    if (!uv) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (typeof event.currentTarget?.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    }
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    viewerMaskDragRef.current = {
+      startUv: uv,
+      startX: event.clientX - rect.left,
+      startY: event.clientY - rect.top,
+    }
+    setViewerMaskDraft({
+      left: event.clientX - rect.left,
+      top: event.clientY - rect.top,
+      width: 0,
+      height: 0,
+    })
+  }
+
+  const handleViewerMaskPointerMove = (event) => {
+    if (!isMaskDrawMode || !viewerMaskDragRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const sx = viewerMaskDragRef.current.startX
+    const sy = viewerMaskDragRef.current.startY
+    const cx = event.clientX - rect.left
+    const cy = event.clientY - rect.top
+    setViewerMaskDraft({
+      left: Math.min(sx, cx),
+      top: Math.min(sy, cy),
+      width: Math.abs(cx - sx),
+      height: Math.abs(cy - sy),
+    })
+  }
+
+  const handleViewerMaskPointerUp = (event) => {
+    if (!isMaskDrawMode || !viewerMaskDragRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (typeof event.currentTarget?.releasePointerCapture === 'function') {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    const containerRect = containerRef.current?.getBoundingClientRect()
+    if (containerRect && viewerMaskDraft) {
+      const cornerClientPoints = [
+        { x: containerRect.left + viewerMaskDraft.left, y: containerRect.top + viewerMaskDraft.top },
+        { x: containerRect.left + viewerMaskDraft.left + viewerMaskDraft.width, y: containerRect.top + viewerMaskDraft.top },
+        {
+          x: containerRect.left + viewerMaskDraft.left + viewerMaskDraft.width,
+          y: containerRect.top + viewerMaskDraft.top + viewerMaskDraft.height,
+        },
+        { x: containerRect.left + viewerMaskDraft.left, y: containerRect.top + viewerMaskDraft.top + viewerMaskDraft.height },
+      ]
+      const uvCorners = cornerClientPoints
+        .map((p) => getUvAtClientPosition(p.x, p.y))
+        .filter(Boolean)
+        .map((uv) => ({ x: uv.u, y: 1 - uv.v }))
+
+      if (uvCorners.length === 4) {
+        const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+        setPixelateMasks((prev) => [...prev, { id, points: uvCorners, version: 3 }])
+      } else {
+        const endUv = getUvAtClientPosition(event.clientX, event.clientY)
+        addMaskFromUvPair(viewerMaskDragRef.current.startUv, endUv)
+      }
+    } else {
+      const endUv = getUvAtClientPosition(event.clientX, event.clientY)
+      addMaskFromUvPair(viewerMaskDragRef.current.startUv, endUv)
+    }
+    viewerMaskDragRef.current = null
+    setViewerMaskDraft(null)
+  }
+
+  const exportEditedJpeg = () => {
+    const image = loadedImageRef.current
+    const meta = loadedMetaRef.current
+    if (!image || !meta) return
+    const width = Number(meta.width || image.naturalWidth || image.width || 0)
+    const height = Number(meta.height || image.naturalHeight || image.height || 0)
+    if (!width || !height) return
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d', { alpha: false })
+    if (!ctx) return
+    ctx.drawImage(image, 0, 0, width, height)
+
+    const maskCount = Array.isArray(pixelateMasks) ? pixelateMasks.length : 0
+    const effectStrength = Math.max(4, Number(maskEffectStrength) || 32)
+    const useBlur = maskEffectMode === 'blur'
+    if (maskCount > 0) {
+      for (const mask of pixelateMasks) {
+        if (Array.isArray(mask?.points) && mask.points.length >= 3) {
+          const pointsPx = mask.points
+            .map((p) => {
+              const nx = Number(p?.x)
+              const ny = Number(p?.y)
+              if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null
+              const ex = flipHorizontal ? nx : 1 - nx
+              return { x: ex * width, y: ny * height }
+            })
+            .filter(Boolean)
+          if (pointsPx.length >= 3) {
+            if (useBlur) applyBlurToPolygon(canvas, ctx, pointsPx, effectStrength)
+            else applyPixelateToPolygon(canvas, ctx, pointsPx, effectStrength)
+            continue
+          }
+        }
+
+        const nx = Number(mask.x) || 0
+        const ny = Number(mask.y) || 0
+        const nw = Number(mask.width) || 0
+        const nh = Number(mask.height) || 0
+        const exportXNorm = flipHorizontal ? nx : 1 - nx - nw
+
+        const x = Math.round(exportXNorm * width)
+        const y = Math.round(ny * height)
+        const w = Math.round(nw * width)
+        const h = Math.round(nh * height)
+        if (w <= 1 || h <= 1) continue
+        if (useBlur) applyBlurToCanvasRegion(canvas, ctx, x, y, w, h, effectStrength)
+        else applyPixelateToCanvasRegion(canvas, ctx, x, y, w, h, effectStrength)
+      }
+    }
+
+    let jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95)
+    const safeGps = sanitizeGpsCoords(activeGpsCoords)
+    if (safeGps) {
+      try {
+        jpegDataUrl = attachGpsToJpegDataUrl(jpegDataUrl, safeGps)
+      } catch {
+        // Export still succeeds without metadata if EXIF injection fails.
+      }
+    }
+
+    const a = document.createElement('a')
+    const baseName = String(meta.name || 'panorama').replace(/\.[^.]+$/, '')
+    a.href = jpegDataUrl
+    a.download = `${baseName}-edited.jpg`
+    a.click()
+    setStatus(`${t('strings.editedExportDone')} (masks: ${maskCount}, ${maskEffectMode})`)
+  }
+
+  const projectedMaskPreviews = useMemo(() => {
+    if (!hasActivePanorama || !isEditMode || !Array.isArray(pixelateMasks) || pixelateMasks.length === 0) return []
+    const renderer = rendererRef.current
+    const camera = cameraRef.current
+    const mesh = meshRef.current
+    if (!renderer || !camera || !mesh) return []
+
+    const rect = renderer.domElement.getBoundingClientRect()
+    const viewportW = rect.width
+    const viewportH = rect.height
+    if (!viewportW || !viewportH) return []
+
+    const uvToLocalPoint = (u, v) => {
+      const uu = ((u % 1) + 1) % 1
+      const vv = Math.max(0, Math.min(1, v))
+      if (activeProjection === 'cylindrical') {
+        const theta = uu * Math.PI * 2
+        const radius = 500
+        const height = 500
+        // CylinderGeometry UV has v=1 at top and v=0 at bottom.
+        return new THREE.Vector3(radius * Math.sin(theta), (vv - 0.5) * height, radius * Math.cos(theta))
+      }
+      // SphereGeometry UV has v=1 at top and v=0 at bottom.
+      const phi = uu * Math.PI * 2
+      const theta = (1 - vv) * Math.PI
+      const radius = 500
+      return new THREE.Vector3(
+        -radius * Math.cos(phi) * Math.sin(theta),
+        radius * Math.cos(theta),
+        radius * Math.sin(phi) * Math.sin(theta),
+      )
+    }
+
+    const result = []
+    for (const mask of pixelateMasks) {
+      let cornersUv = []
+      if (Array.isArray(mask?.points) && mask.points.length >= 3) {
+        cornersUv = mask.points
+          .map((p) => {
+            const x = Number(p?.x)
+            const y = Number(p?.y)
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+            return { u: x, v: 1 - y }
+          })
+          .filter(Boolean)
+      } else {
+        const x = Number(mask?.x)
+        const y = Number(mask?.y)
+        const w = Number(mask?.width)
+        const h = Number(mask?.height)
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue
+        if (w <= 0 || h <= 0) continue
+        cornersUv = [
+          { u: x, v: 1 - y },
+          { u: x + w, v: 1 - y },
+          { u: x + w, v: 1 - (y + h) },
+          { u: x, v: 1 - (y + h) },
+        ]
+      }
+      if (cornersUv.length < 3) continue
+
+      const cornerPoints = []
+      let visibleCorners = 0
+      for (const corner of cornersUv) {
+        const world = uvToLocalPoint(corner.u, corner.v).applyMatrix4(mesh.matrixWorld)
+        const projected = world.clone().project(camera)
+        if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z)) continue
+        if (projected.z >= -1 && projected.z <= 1) visibleCorners += 1
+        const sx = ((projected.x + 1) * 0.5) * viewportW
+        const sy = ((1 - projected.y) * 0.5) * viewportH
+        cornerPoints.push({ x: sx, y: sy })
+      }
+      // Avoid unstable "half-screen" polygons when any corner goes behind camera.
+      // In that transition state the preview can explode across the viewport.
+      if (cornerPoints.length < 4 || visibleCorners < 4) continue
+
+      const pointsNormalized = cornerPoints.map((p) => ({
+        x: p.x / viewportW,
+        y: p.y / viewportH,
+      }))
+      const topRight = cornerPoints.reduce(
+        (best, p) => {
+          if (p.y < best.y || (Math.abs(p.y - best.y) < 1e-6 && p.x > best.x)) return p
+          return best
+        },
+        { x: cornerPoints[0].x, y: cornerPoints[0].y },
+      )
+      const topLeft = cornerPoints.reduce(
+        (best, p) => {
+          if (p.y < best.y || (Math.abs(p.y - best.y) < 1e-6 && p.x < best.x)) return p
+          return best
+        },
+        { x: cornerPoints[0].x, y: cornerPoints[0].y },
+      )
+
+      const clamp01 = (value) => Math.max(0, Math.min(1, value))
+      const labelX = clamp01(topLeft.x / viewportW)
+      const labelY = clamp01(topLeft.y / viewportH)
+      const removeX = clamp01(topRight.x / viewportW)
+      const removeY = clamp01(topRight.y / viewportH)
+
+      result.push({
+        id: mask.id,
+        points: pointsNormalized,
+        labelX,
+        labelY,
+        removeX,
+        removeY,
+      })
+    }
+    return result
+  }, [pixelateMasks, hasActivePanorama, isEditMode, activeProjection, maskPreviewTick])
+
+  const maskOrderById = useMemo(() => {
+    const map = new Map()
+    for (let i = 0; i < pixelateMasks.length; i += 1) {
+      const id = pixelateMasks[i]?.id
+      if (id) map.set(id, i + 1)
+    }
+    return map
+  }, [pixelateMasks])
+
+  useEffect(() => {
+    if (!hasActivePanorama || !isEditMode) return undefined
+    let raf = 0
+    const loop = () => {
+      setMaskPreviewTick((prev) => (prev + 1) % 1000000)
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [hasActivePanorama, isEditMode])
 
   useEffect(() => {
     if (!visibleExifTabs.includes(exifTab)) {
@@ -3231,6 +4176,16 @@ function App() {
     if (!hasActivePanorama) return
     shouldRestoreHomeScrollRef.current = true
     setHasActivePanorama(false)
+    setIsEditMode(false)
+    setIsMapPickerOpen(false)
+    setIsMaskEditorOpen(false)
+    setIsMaskDrawMode(false)
+    setEditedGpsCoords(null)
+    setHasGpsOverride(false)
+    setLatInput('')
+    setLonInput('')
+    setPixelateMasks([])
+    setMaskDraft(null)
     setResolvedLocality('')
     setIsResolvingLocality(false)
   }
@@ -3936,6 +4891,18 @@ function App() {
             onChange={(event) => setShowTelemetry(event.target.checked)}
           />
         </label>
+        <button
+          type="button"
+          className={`toolbar-edit-btn ${isEditMode ? 'is-active' : ''}`}
+          disabled={!hasActivePanorama}
+          aria-label={isEditMode ? t('strings.closeEdit') : t('strings.editPanorama')}
+          onClick={() => {
+            if (!hasActivePanorama) return
+            setIsEditMode((prev) => !prev)
+          }}
+        >
+          {isEditMode ? t('strings.closeEdit') : t('strings.editPanorama')}
+        </button>
         <input
           ref={inputRef}
           type="file"
@@ -3975,12 +4942,12 @@ function App() {
       </p>
       <div className="viewer-wrap">
         <div ref={containerRef} className="viewer" />
-        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && gpsCoords && (
+        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && activeGpsCoords && (
           <div className="map-overlay" aria-label="Panorama GPS location">
             <div className="map-overlay-head">
               <span>GPS</span>
               <a
-                href={`https://www.openstreetmap.org/?mlat=${gpsCoords.lat}&mlon=${gpsCoords.lon}#map=16/${gpsCoords.lat}/${gpsCoords.lon}`}
+                href={`https://www.openstreetmap.org/?mlat=${activeGpsCoords.lat}&mlon=${activeGpsCoords.lon}#map=16/${activeGpsCoords.lat}/${activeGpsCoords.lon}`}
                 target="_blank"
                 rel="noreferrer"
               >
@@ -3989,11 +4956,11 @@ function App() {
             </div>
             <iframe title="Location map" src={mapSrc} loading="lazy" />
             <p>
-              {gpsCoords.lat.toFixed(6)}, {gpsCoords.lon.toFixed(6)}
+              {activeGpsCoords.lat.toFixed(6)}, {activeGpsCoords.lon.toFixed(6)}
             </p>
           </div>
         )}
-        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && !gpsCoords && (
+        {showLocationPanel && showGpsMapOverlay && hasActivePanorama && !activeGpsCoords && (
           <div className="map-overlay map-overlay-empty" aria-live="polite">
             {hasAnyGpsData ? 'No valid GPS coordinates in EXIF.' : 'No GPS data in EXIF.'}
           </div>
@@ -4005,6 +4972,76 @@ function App() {
             ))}
           </div>
         )}
+        {hasActivePanorama && isEditMode && projectedMaskPreviews.length > 0 && (
+          <div className="viewer-mask-preview-layer">
+            <svg className="viewer-mask-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+              {projectedMaskPreviews.map((mask) => (
+                <polygon
+                  key={`preview-poly-${mask.id}`}
+                  className="viewer-mask-polygon"
+                  points={mask.points.map((p) => `${(p.x * 100).toFixed(3)},${(p.y * 100).toFixed(3)}`).join(' ')}
+                />
+              ))}
+            </svg>
+            {projectedMaskPreviews.map((mask) => (
+              <div key={`preview-ui-${mask.id}`}>
+                <span
+                  className="viewer-mask-id"
+                  style={{
+                    left: `${mask.labelX * 100}%`,
+                    top: `${mask.labelY * 100}%`,
+                  }}
+                >
+                  #{maskOrderById.get(mask.id) || '?'}
+                </span>
+                <button
+                  type="button"
+                  className="viewer-mask-remove"
+                  style={{
+                    left: `${mask.removeX * 100}%`,
+                    top: `${mask.removeY * 100}%`,
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    removeMask(mask.id)
+                  }}
+                  aria-label={`Remove mask #${maskOrderById.get(mask.id) || ''}`}
+                >
+                  x
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {hasActivePanorama && isMaskDrawMode && (
+          <div
+            className="viewer-mask-overlay"
+            onPointerDown={handleViewerMaskPointerDown}
+            onPointerMove={handleViewerMaskPointerMove}
+            onPointerUp={handleViewerMaskPointerUp}
+            onPointerCancel={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (typeof event.currentTarget?.releasePointerCapture === 'function') {
+                event.currentTarget.releasePointerCapture(event.pointerId)
+              }
+              viewerMaskDragRef.current = null
+              setViewerMaskDraft(null)
+            }}
+          >
+            {viewerMaskDraft && (
+              <div
+                className="viewer-mask-draft"
+                style={{
+                  left: `${viewerMaskDraft.left}px`,
+                  top: `${viewerMaskDraft.top}px`,
+                  width: `${viewerMaskDraft.width}px`,
+                  height: `${viewerMaskDraft.height}px`,
+                }}
+              />
+            )}
+          </div>
+        )}
         {hasActivePanorama && (
           <>
             <button
@@ -4013,8 +5050,165 @@ function App() {
               aria-label="Close panorama"
               onClick={closePanoramaToHome}
             >
-              ×
+              x
             </button>
+            {isEditMode && (
+              <section className="edit-panel" aria-label={t('strings.editPanelTitle')}>
+                <h3>{t('strings.editPanelTitle')}</h3>
+                <div className="edit-section">
+                  <div className="edit-section-head">
+                    <span>{t('strings.editSectionGps')}</span>
+                  </div>
+                  <div className="edit-gps-row">
+                    <label>
+                      {t('strings.lat')}
+                      <input
+                        type="text"
+                        value={latInput}
+                        onChange={(event) => setLatInput(event.target.value)}
+                        onBlur={applyManualGpsInputs}
+                      />
+                    </label>
+                    <label>
+                      {t('strings.lon')}
+                      <input
+                        type="text"
+                        value={lonInput}
+                        onChange={(event) => setLonInput(event.target.value)}
+                        onBlur={applyManualGpsInputs}
+                      />
+                    </label>
+                  </div>
+                  <div className="edit-actions">
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => runWithGpsOverrideGuard(() => setIsMapPickerOpen(true))}
+                    >
+                      {t('strings.pickGpsOnMap')}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() =>
+                        runWithGpsOverrideGuard(() => {
+                          setEditedGpsCoords(null)
+                          setHasGpsOverride(true)
+                        })
+                      }
+                    >
+                      {t('strings.removeGps')}
+                    </button>
+                  </div>
+                  <div
+                    className={`gps-photo-dropzone ${isGpsPhotoDragging ? 'is-active' : ''}`}
+                    onDragEnter={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setIsGpsPhotoDragging(true)
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                    }}
+                    onDragLeave={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setIsGpsPhotoDragging(false)
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setIsGpsPhotoDragging(false)
+                      const file = event.dataTransfer?.files?.[0]
+                      if (file) applyGpsFromReferencePhoto(file)
+                    }}
+                    onClick={() => gpsPhotoInputRef.current?.click()}
+                  >
+                    <strong>{t('strings.gpsFromPhoto')}</strong>
+                    <span>{t('strings.gpsFromPhotoHint')}</span>
+                  </div>
+                </div>
+
+                <div className="edit-section">
+                  <div className="edit-section-head">
+                    <span>{t('strings.editSectionMasks')}</span>
+                  </div>
+                  <div className="edit-actions">
+                    <button
+                      type="button"
+                      className={`secondary-btn ${isMaskDrawMode ? 'is-active' : ''}`}
+                      onClick={() => {
+                        setIsMaskDrawMode((prev) => !prev)
+                        setViewerMaskDraft(null)
+                        viewerMaskDragRef.current = null
+                      }}
+                    >
+                      {isMaskDrawMode ? t('strings.stopDrawing') : t('strings.drawOnPanorama')}
+                    </button>
+                    <button type="button" className="secondary-btn" onClick={() => setPixelateMasks([])}>
+                      {t('strings.clearMasks')}
+                    </button>
+                  </div>
+                  <div className="edit-mask-count">
+                    {t('strings.maskCount')}: <strong>{pixelateMasks.length}</strong>
+                  </div>
+                  <div className="edit-mask-controls">
+                    <AnimatedDropdown
+                      label={t('strings.maskEffect')}
+                      value={maskEffectMode}
+                      options={maskEffectOptions}
+                      onChange={setMaskEffectMode}
+                    />
+                    <label>
+                      <span>
+                        {t('strings.maskStrength')}: <strong>{maskEffectStrength}</strong>
+                      </span>
+                      <input
+                        type="range"
+                        min="8"
+                        max="72"
+                        step="1"
+                        value={maskEffectStrength}
+                        onChange={(event) => setMaskEffectStrength(Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                  {pixelateMasks.length > 0 && (
+                    <div className="edit-mask-list">
+                      {pixelateMasks.map((mask, index) => (
+                        <div key={mask.id} className="edit-mask-item">
+                          <span>#{index + 1}</span>
+                          <button type="button" className="mask-mini-remove" onClick={() => removeMask(mask.id)}>
+                            x
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <input
+                  ref={gpsPhotoInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden-input"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) applyGpsFromReferencePhoto(file)
+                    event.target.value = ''
+                  }}
+                />
+                <div className="edit-actions edit-footer-actions">
+                  <button type="button" className="secondary-btn" onClick={() => setIsEditMode(false)}>
+                    {t('strings.cancel')}
+                  </button>
+                  <button type="button" className="primary-btn" onClick={exportEditedJpeg}>
+                    {t('strings.exportEditedJpeg')}
+                  </button>
+                </div>
+              </section>
+            )}
             {previousHomeItem && (
               <button
                 type="button"
@@ -4023,7 +5217,7 @@ function App() {
                 title="Previous panorama"
                 onClick={() => openPanoramaFromLibrary(previousHomeItem)}
               >
-                <span>‹</span>
+                <span>{'<'}</span>
               </button>
             )}
             {nextHomeItem && (
@@ -4034,7 +5228,7 @@ function App() {
                 title="Next panorama"
                 onClick={() => openPanoramaFromLibrary(nextHomeItem)}
               >
-                <span>›</span>
+                <span>{'>'}</span>
               </button>
             )}
           </>
@@ -4711,6 +5905,106 @@ function App() {
         </div>
       )}
 
+      {isGpsOverrideConfirmOpen && (
+        <div className="confirm-backdrop" onClick={closeGpsOverrideConfirm}>
+          <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>{t('strings.gpsOverwriteTitle')}</h3>
+            <p>{t('strings.gpsOverwriteMessage')}</p>
+            <div className="confirm-actions">
+              <button type="button" className="secondary-btn" onClick={closeGpsOverrideConfirm}>
+                Cancel
+              </button>
+              <button type="button" className="danger-btn" onClick={confirmGpsOverride}>
+                {t('strings.replaceGps')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isMapPickerOpen && (
+        <div className="modal-backdrop" onClick={() => setIsMapPickerOpen(false)}>
+          <div className="modal gps-map-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>{t('strings.pickGpsOnMap')}</h2>
+              <button type="button" onClick={() => setIsMapPickerOpen(false)}>
+                Close
+              </button>
+            </div>
+            <p>{t('strings.pickGpsHint')}</p>
+            <div ref={gpsMapContainerRef} className="gps-map-canvas" />
+          </div>
+        </div>
+      )}
+
+      {isMaskEditorOpen && (
+        <div className="modal-backdrop" onClick={() => setIsMaskEditorOpen(false)}>
+          <div className="modal mask-editor-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>{t('strings.maskEditorTitle')}</h2>
+              <button type="button" onClick={() => setIsMaskEditorOpen(false)}>
+                Close
+              </button>
+            </div>
+            <p>{t('strings.maskEditorHint')}</p>
+            <div
+              ref={maskSurfaceRef}
+              className="mask-editor-surface"
+              onPointerDown={handleMaskPointerDown}
+              onPointerMove={handleMaskPointerMove}
+              onPointerUp={commitMaskDraft}
+              onPointerCancel={() => {
+                maskPointerRef.current = null
+                setMaskDraft(null)
+              }}
+              onPointerLeave={(event) => {
+                if ((event.buttons & 1) === 1) return
+                if (!maskPointerRef.current) return
+                maskPointerRef.current = null
+                setMaskDraft(null)
+              }}
+            >
+              <img src={currentUrlRef.current || ''} alt="Mask preview" className="mask-editor-image" />
+              {pixelateMasks.map((mask) => (
+                <div
+                  key={mask.id}
+                  className="mask-rect"
+                  style={{
+                    left: `${mask.x * 100}%`,
+                    top: `${mask.y * 100}%`,
+                    width: `${mask.width * 100}%`,
+                    height: `${mask.height * 100}%`,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="mask-rect-remove"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      removeMask(mask.id)
+                    }}
+                    aria-label="Remove mask"
+                  >
+                    x
+                  </button>
+                </div>
+              ))}
+              {maskDraft && (
+                <div
+                  className="mask-rect mask-rect-draft"
+                  style={{
+                    left: `${maskDraft.x * 100}%`,
+                    top: `${maskDraft.y * 100}%`,
+                    width: `${maskDraft.width * 100}%`,
+                    height: `${maskDraft.height * 100}%`,
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {isExifOpen && (
         <div className="modal-backdrop" onClick={() => setIsExifOpen(false)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
@@ -4865,4 +6159,5 @@ function App() {
 }
 
 export default App
+
 
