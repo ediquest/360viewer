@@ -1,5 +1,9 @@
-﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import * as exifr from 'exifr'
 import L from 'leaflet'
 import piexif from 'piexifjs'
@@ -88,6 +92,8 @@ const I18N = {
       collapseAllFolders: 'Collapse all folders',
       expandAllFolders: 'Expand all folders',
       clearFolderFilter: 'Clear folder filter',
+      photoFromPanorama: 'Photo',
+      openPhotoFrame: 'Photo frame mode',
       editPanorama: 'Edit',
       closeEdit: 'Close edit',
       editPanelTitle: 'Panorama edit',
@@ -97,6 +103,15 @@ const I18N = {
       gpsFromPhotoHint: 'Drop a photo with EXIF GPS or click to choose.',
       removeGps: 'Remove GPS',
       exportEditedJpeg: 'Export edited JPG',
+      openExportPanel: 'Export options',
+      exportPanelTitle: 'Export',
+      exportMode: 'Mode',
+      exportModePanorama: 'Full panorama',
+      exportModePhoto: 'Photo frame',
+      exportAspect: 'Aspect ratio',
+      exportFrameSize: 'Frame size',
+      exportFrameHint: 'Drag panorama to compose the shot inside the frame.',
+      exportPhotoJpeg: 'Export photo JPG',
       lat: 'Lat',
       lon: 'Lon',
       gpsSaved: 'GPS saved in editor.',
@@ -116,6 +131,32 @@ const I18N = {
       maskStrength: 'Strength',
       editSectionGps: 'GPS',
       editSectionMasks: 'Masks',
+      editSectionAdjustments: 'Adjustments',
+      adjustmentPreset: 'Preset',
+      presetCustom: 'Custom',
+      presetNatural: 'Natural',
+      presetBw: 'B&W',
+      presetPunchy: 'Punchy',
+      presetWarm: 'Warm',
+      presetCool: 'Cool',
+      toggleAdjustments: 'Adjust panel',
+      exposure: 'Exposure',
+      contrast: 'Contrast',
+      saturation: 'Saturation',
+      whiteBalance: 'White balance',
+      tint: 'Tint',
+      highlights: 'Highlights',
+      shadows: 'Shadows',
+      sharpen: 'Sharpen',
+      bloom: 'Bloom',
+      vignette: 'Vignette',
+      grain: 'Grain',
+      lut: 'Look (LUT)',
+      lutNone: 'None',
+      lutCinematic: 'Cinematic',
+      lutTealOrange: 'Teal/Orange',
+      lutVintage: 'Vintage',
+      resetAdjustments: 'Reset adjustments',
       gpsOverwriteTitle: 'Replace existing GPS?',
       gpsOverwriteMessage: 'This panorama already has GPS coordinates. Do you want to replace them?',
       replaceGps: 'Replace GPS',
@@ -181,6 +222,8 @@ const I18N = {
       collapseAllFolders: 'Zwin wszystkie foldery',
       expandAllFolders: 'Rozwin wszystkie foldery',
       clearFolderFilter: 'Wyczysc filtr folderu',
+      photoFromPanorama: 'Foto',
+      openPhotoFrame: 'Tryb kadru foto',
       editPanorama: 'Edycja',
       closeEdit: 'Zamknij edycje',
       editPanelTitle: 'Edycja panoramy',
@@ -190,6 +233,15 @@ const I18N = {
       gpsFromPhotoHint: 'Upusc zdjecie z EXIF GPS lub kliknij, aby wybrac.',
       removeGps: 'Usun GPS',
       exportEditedJpeg: 'Eksportuj edytowany JPG',
+      openExportPanel: 'Opcje eksportu',
+      exportPanelTitle: 'Eksport',
+      exportMode: 'Tryb',
+      exportModePanorama: 'Cala panorama',
+      exportModePhoto: 'Kadr foto',
+      exportAspect: 'Proporcje',
+      exportFrameSize: 'Rozmiar kadru',
+      exportFrameHint: 'Przeciagaj panorame, aby ustawic kadr w ramce.',
+      exportPhotoJpeg: 'Eksportuj foto JPG',
       lat: 'Szer',
       lon: 'Dlug',
       gpsSaved: 'GPS zapisany w edycji.',
@@ -209,6 +261,32 @@ const I18N = {
       maskStrength: 'Sila',
       editSectionGps: 'GPS',
       editSectionMasks: 'Maski',
+      editSectionAdjustments: 'Korekty',
+      adjustmentPreset: 'Preset',
+      presetCustom: 'Niestandardowy',
+      presetNatural: 'Naturalny',
+      presetBw: 'Czarno-bialy',
+      presetPunchy: 'Wyrazisty',
+      presetWarm: 'Cieply',
+      presetCool: 'Chlodny',
+      toggleAdjustments: 'Panel korekt',
+      exposure: 'Ekspozycja',
+      contrast: 'Kontrast',
+      saturation: 'Nasycenie',
+      whiteBalance: 'Balans bieli',
+      tint: 'Tint',
+      highlights: 'Jasne tony',
+      shadows: 'Cienie',
+      sharpen: 'Wyostrzenie',
+      bloom: 'Bloom',
+      vignette: 'Winieta',
+      grain: 'Ziarno',
+      lut: 'Look (LUT)',
+      lutNone: 'Brak',
+      lutCinematic: 'Kinowy',
+      lutTealOrange: 'Teal/Orange',
+      lutVintage: 'Vintage',
+      resetAdjustments: 'Resetuj korekty',
       gpsOverwriteTitle: 'Nadpisac istniejacy GPS?',
       gpsOverwriteMessage: 'Ta panorama ma juz wspolrzedne GPS. Czy chcesz je zastapic?',
       replaceGps: 'Nadpisz GPS',
@@ -238,6 +316,215 @@ const CYLINDRICAL_MIN_FOV = 45
 const CYLINDRICAL_MAX_FOV = 140
 const EXIF_TAB_ORDER = ['basic', 'camera', 'capture', 'gps', 'panorama', 'other', 'all']
 const LOCALITY_FAILURE_RETRY_MS = 2 * 60 * 1000
+const DEFAULT_ADJUSTMENTS = Object.freeze({
+  exposure: 0,
+  contrast: 0,
+  saturation: 1,
+  temperature: 0,
+  tint: 0,
+  highlights: 0,
+  shadows: 0,
+  sharpen: 0,
+  bloom: 0,
+  vignette: 0,
+  grain: 0,
+})
+const LUT_MODE_VALUES = Object.freeze({
+  none: 0,
+  cinematic: 1,
+  teal_orange: 2,
+  vintage: 3,
+})
+const EXPORT_ASPECT_VALUES = Object.freeze({
+  '16:9': 16 / 9,
+  '9:16': 9 / 16,
+  '4:3': 4 / 3,
+  '3:4': 3 / 4,
+  '1:1': 1,
+  '21:9': 21 / 9,
+})
+const ADJUSTMENT_PRESETS = Object.freeze({
+  custom: null,
+  natural: {
+    exposure: 0.08, contrast: 0.1, saturation: 1.06, temperature: 0, tint: 0, highlights: 0.05, shadows: 0.08,
+    sharpen: 0.2, bloom: 0.06, vignette: 0.06, grain: 0.01, lut: 'none',
+  },
+  bw: {
+    exposure: 0, contrast: 0.18, saturation: 0, temperature: 0, tint: 0, highlights: 0.12, shadows: 0.12,
+    sharpen: 0.28, bloom: 0.04, vignette: 0.08, grain: 0.03, lut: 'none',
+  },
+  punchy: {
+    exposure: 0.12, contrast: 0.26, saturation: 1.22, temperature: 0, tint: 0, highlights: 0.1, shadows: 0.18,
+    sharpen: 0.36, bloom: 0.12, vignette: 0.12, grain: 0.015, lut: 'cinematic',
+  },
+  warm: {
+    exposure: 0.05, contrast: 0.08, saturation: 1.08, temperature: 0.22, tint: -0.03, highlights: 0.06, shadows: 0.1,
+    sharpen: 0.16, bloom: 0.08, vignette: 0.07, grain: 0.01, lut: 'vintage',
+  },
+  cool: {
+    exposure: 0, contrast: 0.12, saturation: 0.95, temperature: -0.2, tint: 0.05, highlights: 0.08, shadows: 0.12,
+    sharpen: 0.16, bloom: 0.08, vignette: 0.07, grain: 0.012, lut: 'teal_orange',
+  },
+})
+
+const PANORAMA_ADJUST_SHADER = {
+  uniforms: {
+    tDiffuse: { value: null },
+    exposure: { value: DEFAULT_ADJUSTMENTS.exposure },
+    contrast: { value: DEFAULT_ADJUSTMENTS.contrast },
+    saturation: { value: DEFAULT_ADJUSTMENTS.saturation },
+    temperature: { value: DEFAULT_ADJUSTMENTS.temperature },
+    tint: { value: DEFAULT_ADJUSTMENTS.tint },
+    highlights: { value: DEFAULT_ADJUSTMENTS.highlights },
+    shadows: { value: DEFAULT_ADJUSTMENTS.shadows },
+    sharpen: { value: DEFAULT_ADJUSTMENTS.sharpen },
+    bloom: { value: DEFAULT_ADJUSTMENTS.bloom },
+    vignette: { value: DEFAULT_ADJUSTMENTS.vignette },
+    grain: { value: DEFAULT_ADJUSTMENTS.grain },
+    lutMode: { value: LUT_MODE_VALUES.none },
+    texelSize: { value: new THREE.Vector2(1 / 1024, 1 / 1024) },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform sampler2D tDiffuse;
+    uniform float exposure;
+    uniform float contrast;
+    uniform float saturation;
+    uniform float temperature;
+    uniform float tint;
+    uniform float highlights;
+    uniform float shadows;
+    uniform float sharpen;
+    uniform float bloom;
+    uniform float vignette;
+    uniform float grain;
+    uniform float lutMode;
+    uniform vec2 texelSize;
+    varying vec2 vUv;
+
+    float rand(vec2 co) {
+      return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    float signedPow(float v, float p) {
+      float a = pow(abs(v), p);
+      return v < 0.0 ? -a : a;
+    }
+
+    vec3 adjustColor(vec3 inputColor) {
+      vec3 color = inputColor * pow(2.0, exposure);
+      float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      color = mix(vec3(luma), color, max(0.0, saturation));
+      color = (color - 0.5) * (1.0 + contrast * 0.55) + 0.5;
+      float hiMask = smoothstep(0.4, 1.0, luma);
+      float shMask = 1.0 - smoothstep(0.08, 0.42, luma);
+      float hiEff = signedPow(highlights, 0.72);
+      float shEff = signedPow(shadows, 1.7);
+      if (hiEff >= 0.0) {
+        color += hiEff * hiMask * (1.0 - color) * 2.0;
+      } else {
+        color += hiEff * hiMask * color * 1.1;
+      }
+      if (shEff >= 0.0) {
+        color += shEff * shMask * (1.0 - color) * 0.28;
+      } else {
+        color += shEff * shMask * color * 0.5;
+      }
+      color.r += temperature * 0.09;
+      color.b -= temperature * 0.09;
+      color.g += tint * 0.08;
+      color.r -= tint * 0.03;
+      color.b -= tint * 0.03;
+      return color;
+    }
+
+    vec3 applyLut(vec3 color) {
+      if (lutMode < 0.5) {
+        return color;
+      }
+      if (lutMode < 1.5) {
+        vec3 base = color;
+        vec3 c = color;
+        c = (c - 0.5) * 1.10 + 0.5;
+        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        vec3 warm = vec3(1.04, 1.01, 0.98);
+        vec3 cool = vec3(0.96, 1.00, 1.06);
+        c *= mix(cool, warm, smoothstep(0.32, 0.85, l));
+        c = mix(vec3(l), c, 1.03);
+        return clamp(mix(base, c, 0.78), 0.0, 1.0);
+      }
+      if (lutMode < 2.5) {
+        vec3 c = color;
+        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        vec3 shadowsTint = vec3(0.86, 1.02, 1.12);
+        vec3 highsTint = vec3(1.12, 1.00, 0.90);
+        c *= mix(shadowsTint, highsTint, smoothstep(0.28, 0.82, l));
+        c = (c - 0.5) * 1.12 + 0.5;
+        return clamp(c, 0.0, 1.0);
+      }
+      vec3 v = color;
+      v.r = pow(v.r, 0.92) * 1.04;
+      v.g = pow(v.g, 0.95) * 1.01;
+      v.b = pow(v.b, 1.07) * 0.92;
+      float l = dot(v, vec3(0.2126, 0.7152, 0.0722));
+      v = mix(vec3(l), v, 0.88);
+      return clamp(v, 0.0, 1.0);
+    }
+
+    void main() {
+      vec4 src = texture2D(tDiffuse, vUv);
+      vec3 color = adjustColor(src.rgb);
+
+      if (sharpen > 0.001) {
+        vec3 n = adjustColor(texture2D(tDiffuse, vUv + vec2(0.0, -texelSize.y)).rgb);
+        vec3 s = adjustColor(texture2D(tDiffuse, vUv + vec2(0.0, texelSize.y)).rgb);
+        vec3 e = adjustColor(texture2D(tDiffuse, vUv + vec2(texelSize.x, 0.0)).rgb);
+        vec3 w = adjustColor(texture2D(tDiffuse, vUv + vec2(-texelSize.x, 0.0)).rgb);
+        vec3 blur = (n + s + e + w) * 0.25;
+        float sharpenMul = min(2.5, sharpen * 1.25);
+        color += (color - blur) * sharpenMul;
+      }
+
+      if (bloom > 0.001) {
+        vec2 r1 = texelSize * 2.5;
+        vec2 r2 = texelSize * 5.0;
+        vec3 b0 = adjustColor(texture2D(tDiffuse, vUv + vec2(r1.x, 0.0)).rgb);
+        vec3 b1 = adjustColor(texture2D(tDiffuse, vUv + vec2(-r1.x, 0.0)).rgb);
+        vec3 b2 = adjustColor(texture2D(tDiffuse, vUv + vec2(0.0, r1.y)).rgb);
+        vec3 b3 = adjustColor(texture2D(tDiffuse, vUv + vec2(0.0, -r1.y)).rgb);
+        vec3 b4 = adjustColor(texture2D(tDiffuse, vUv + vec2(r2.x, r2.y)).rgb);
+        vec3 b5 = adjustColor(texture2D(tDiffuse, vUv + vec2(-r2.x, r2.y)).rgb);
+        vec3 b6 = adjustColor(texture2D(tDiffuse, vUv + vec2(r2.x, -r2.y)).rgb);
+        vec3 b7 = adjustColor(texture2D(tDiffuse, vUv + vec2(-r2.x, -r2.y)).rgb);
+        vec3 blur2 = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7 + color) / 9.0;
+        vec3 bright = max(blur2 - vec3(0.45), vec3(0.0));
+        color += bright * bloom * 2.8;
+      }
+
+      if (vignette > 0.001) {
+        vec2 centered = vUv - vec2(0.5);
+        float dist = length(centered) / 0.70710678;
+        float vig = smoothstep(0.25, 1.0, dist) * vignette;
+        color *= (1.0 - vig);
+      }
+
+      if (grain > 0.0001) {
+        float n = rand(vUv * 4096.0) - 0.5;
+        color += vec3(n * grain);
+      }
+
+      color = applyLut(clamp(color, 0.0, 1.0));
+      gl_FragColor = vec4(clamp(color, 0.0, 1.0), src.a);
+    }
+  `,
+}
 
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes) || bytes < 0) return '-'
@@ -603,6 +890,293 @@ const applyBlurToCanvasRegion = (canvas, ctx, x, y, width, height, blurPx = 20) 
   applyBlurToPolygon(canvas, ctx, rectPoints, blurPx)
 }
 
+const clampUnit = (value) => Math.min(1, Math.max(0, value))
+const toFiniteOr = (value, fallback) => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
+}
+const applyLutToRgb = (r, g, b, lutMode) => {
+  if (lutMode === 'cinematic') {
+    const br = r
+    const bg = g
+    const bb0 = b
+    let rr = (r - 0.5) * 1.10 + 0.5
+    let gg = (g - 0.5) * 1.10 + 0.5
+    let bb = (b - 0.5) * 1.10 + 0.5
+    const l = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+    const t = clampUnit((l - 0.32) / 0.53)
+    const warm = { r: 1.04, g: 1.01, b: 0.98 }
+    const cool = { r: 0.96, g: 1.0, b: 1.06 }
+    const tr = cool.r + (warm.r - cool.r) * t
+    const tg = cool.g + (warm.g - cool.g) * t
+    const tb = cool.b + (warm.b - cool.b) * t
+    rr *= tr
+    gg *= tg
+    bb *= tb
+    rr = l + (rr - l) * 1.03
+    gg = l + (gg - l) * 1.03
+    bb = l + (bb - l) * 1.03
+    rr = br + (rr - br) * 0.78
+    gg = bg + (gg - bg) * 0.78
+    bb = bb0 + (bb - bb0) * 0.78
+    return {
+      r: clampUnit(rr),
+      g: clampUnit(gg),
+      b: clampUnit(bb),
+    }
+  }
+  if (lutMode === 'teal_orange') {
+    let rr = r
+    let gg = g
+    let bb = b
+    const l = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+    const t = clampUnit((l - 0.28) / 0.54)
+    const sh = { r: 0.86, g: 1.02, b: 1.12 }
+    const hi = { r: 1.12, g: 1.0, b: 0.9 }
+    rr *= sh.r + (hi.r - sh.r) * t
+    gg *= sh.g + (hi.g - sh.g) * t
+    bb *= sh.b + (hi.b - sh.b) * t
+    rr = (rr - 0.5) * 1.12 + 0.5
+    gg = (gg - 0.5) * 1.12 + 0.5
+    bb = (bb - 0.5) * 1.12 + 0.5
+    return { r: clampUnit(rr), g: clampUnit(gg), b: clampUnit(bb) }
+  }
+  if (lutMode === 'vintage') {
+    let rr = (r ** 0.92) * 1.04
+    let gg = (g ** 0.95) * 1.01
+    let bb = (b ** 1.07) * 0.92
+    const l = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+    rr = l + (rr - l) * 0.88
+    gg = l + (gg - l) * 0.88
+    bb = l + (bb - l) * 0.88
+    return { r: clampUnit(rr), g: clampUnit(gg), b: clampUnit(bb) }
+  }
+  return { r: clampUnit(r), g: clampUnit(g), b: clampUnit(b) }
+}
+
+const applyBloomToCanvas = (canvas, ctx, bloom = 0) => {
+  const amount = Math.max(0, Math.min(1, bloom))
+  if (amount <= 0.001) return
+  const width = canvas.width
+  const height = canvas.height
+  const src = document.createElement('canvas')
+  src.width = width
+  src.height = height
+  const sctx = src.getContext('2d', { alpha: false })
+  if (!sctx) return
+  sctx.drawImage(canvas, 0, 0)
+
+  const blurred = document.createElement('canvas')
+  blurred.width = width
+  blurred.height = height
+  const bctx = blurred.getContext('2d', { alpha: false })
+  if (!bctx) return
+  bctx.filter = `blur(${4 + amount * 14}px)`
+  bctx.drawImage(src, 0, 0)
+  bctx.filter = 'none'
+
+  const bloomMask = document.createElement('canvas')
+  bloomMask.width = width
+  bloomMask.height = height
+  const mctx = bloomMask.getContext('2d', { alpha: false })
+  if (!mctx) return
+  mctx.drawImage(blurred, 0, 0)
+  const imageData = mctx.getImageData(0, 0, width, height)
+  const data = imageData.data
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] / 255
+    const g = data[i + 1] / 255
+    const b = data[i + 2] / 255
+    const bright = Math.max(0, (r + g + b) / 3 - 0.45)
+    const scale = Math.min(1, bright * 3.2)
+    data[i] = Math.round(data[i] * scale)
+    data[i + 1] = Math.round(data[i + 1] * scale)
+    data[i + 2] = Math.round(data[i + 2] * scale)
+  }
+  mctx.putImageData(imageData, 0, 0)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'screen'
+  ctx.globalAlpha = amount * 1.25
+  ctx.drawImage(bloomMask, 0, 0)
+  ctx.restore()
+}
+
+const applySharpenToCanvas = (canvas, ctx, amount = 0) => {
+  const strength = Math.max(0, Number(amount) || 0)
+  if (strength <= 0.001) return
+  const width = canvas.width
+  const height = canvas.height
+  if (width < 3 || height < 3) return
+
+  const imageData = ctx.getImageData(0, 0, width, height)
+  const data = imageData.data
+  const source = new Uint8ClampedArray(data)
+  const factor = Math.min(2.5, strength * 1.25)
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const i = (y * width + x) * 4
+      const iN = ((y - 1) * width + x) * 4
+      const iS = ((y + 1) * width + x) * 4
+      const iW = (y * width + (x - 1)) * 4
+      const iE = (y * width + (x + 1)) * 4
+      for (let c = 0; c < 3; c += 1) {
+        const center = source[i + c]
+        const blur = (source[iN + c] + source[iS + c] + source[iW + c] + source[iE + c]) * 0.25
+        const next = center + (center - blur) * factor
+        data[i + c] = Math.max(0, Math.min(255, Math.round(next)))
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+}
+
+const applyGlobalAdjustmentsToCanvas = (canvas, ctx, adjustments, lutMode = 'none') => {
+  const exposure = toFiniteOr(adjustments?.exposure, 0)
+  const contrast = toFiniteOr(adjustments?.contrast, 0)
+  const saturation = toFiniteOr(adjustments?.saturation, 1)
+  const temperature = toFiniteOr(adjustments?.temperature, 0)
+  const tint = toFiniteOr(adjustments?.tint, 0)
+  const highlights = toFiniteOr(adjustments?.highlights, 0)
+  const shadows = toFiniteOr(adjustments?.shadows, 0)
+  const sharpen = toFiniteOr(adjustments?.sharpen, 0)
+  const bloom = toFiniteOr(adjustments?.bloom, 0)
+  const vignette = toFiniteOr(adjustments?.vignette, 0)
+  const grain = toFiniteOr(adjustments?.grain, 0)
+  const hasToneAdjust =
+    Math.abs(exposure) > 1e-4 ||
+    Math.abs(contrast) > 1e-4 ||
+    Math.abs(saturation - 1) > 1e-4 ||
+    Math.abs(temperature) > 1e-4 ||
+    Math.abs(tint) > 1e-4
+
+  if (hasToneAdjust) {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const data = imageData.data
+    const exposureMul = 2 ** exposure
+    const contrastMul = 1 + contrast * 0.55
+    for (let i = 0; i < data.length; i += 4) {
+      let r = (data[i] / 255) * exposureMul
+      let g = (data[i + 1] / 255) * exposureMul
+      let b = (data[i + 2] / 255) * exposureMul
+
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      r = luma + (r - luma) * Math.max(0, saturation)
+      g = luma + (g - luma) * Math.max(0, saturation)
+      b = luma + (b - luma) * Math.max(0, saturation)
+
+      r = (r - 0.5) * contrastMul + 0.5
+      g = (g - 0.5) * contrastMul + 0.5
+      b = (b - 0.5) * contrastMul + 0.5
+
+      const hiMask = clampUnit((luma - 0.4) / 0.6)
+      const shMask = 1 - clampUnit((luma - 0.08) / 0.34)
+      const hiEff = Math.sign(highlights) * Math.abs(highlights) ** 0.72
+      const shEff = Math.sign(shadows) * Math.abs(shadows) ** 1.7
+      if (hiEff >= 0) {
+        r += hiEff * hiMask * (1 - r) * 2.0
+        g += hiEff * hiMask * (1 - g) * 2.0
+        b += hiEff * hiMask * (1 - b) * 2.0
+      } else {
+        r += hiEff * hiMask * r * 1.1
+        g += hiEff * hiMask * g * 1.1
+        b += hiEff * hiMask * b * 1.1
+      }
+      if (shEff >= 0) {
+        r += shEff * shMask * (1 - r) * 0.28
+        g += shEff * shMask * (1 - g) * 0.28
+        b += shEff * shMask * (1 - b) * 0.28
+      } else {
+        r += shEff * shMask * r * 0.5
+        g += shEff * shMask * g * 0.5
+        b += shEff * shMask * b * 0.5
+      }
+
+      r += temperature * 0.09
+      b -= temperature * 0.09
+      g += tint * 0.08
+      r -= tint * 0.03
+      b -= tint * 0.03
+
+      data[i] = Math.round(clampUnit(r) * 255)
+      data[i + 1] = Math.round(clampUnit(g) * 255)
+      data[i + 2] = Math.round(clampUnit(b) * 255)
+    }
+    ctx.putImageData(imageData, 0, 0)
+  }
+
+  if (sharpen > 0.001) {
+    applySharpenToCanvas(canvas, ctx, sharpen)
+  }
+
+  if (bloom > 0.001) {
+    applyBloomToCanvas(canvas, ctx, bloom)
+  }
+
+  if (vignette > 0.001 || grain > 0.0001) {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const data = imageData.data
+    const width = canvas.width
+    const height = canvas.height
+    const safeVignette = Math.max(0, Math.min(1, vignette))
+    const safeGrain = Math.max(0, Math.min(0.3, grain))
+    const centerX = width * 0.5
+    const centerY = height * 0.5
+    const maxDist = Math.max(1e-6, Math.sqrt(centerX * centerX + centerY * centerY))
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4
+        let rf = data[i] / 255
+        let gf = data[i + 1] / 255
+        let bf = data[i + 2] / 255
+
+        if (safeVignette > 0.001) {
+          const dx = x - centerX
+          const dy = y - centerY
+          const dist = Math.sqrt(dx * dx + dy * dy) / maxDist
+          const ramp = Math.max(0, Math.min(1, (dist - 0.25) / 0.75))
+          const vig = ramp * ramp * (3 - 2 * ramp) * safeVignette
+          const mul = 1 - vig
+          rf *= mul
+          gf *= mul
+          bf *= mul
+        }
+
+        if (safeGrain > 0.0001) {
+          const seed = Math.sin((x + 1) * 12.9898 + (y + 1) * 78.233) * 43758.5453
+          const noise = (seed - Math.floor(seed) - 0.5) * safeGrain
+          rf += noise
+          gf += noise
+          bf += noise
+        }
+
+        data[i] = Math.round(clampUnit(rf) * 255)
+        data[i + 1] = Math.round(clampUnit(gf) * 255)
+        data[i + 2] = Math.round(clampUnit(bf) * 255)
+      }
+    }
+    ctx.putImageData(imageData, 0, 0)
+  }
+
+  if (lutMode !== 'none') {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const data = imageData.data
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i] / 255
+      const g = data[i + 1] / 255
+      const b = data[i + 2] / 255
+      const next = applyLutToRgb(r, g, b, lutMode)
+      data[i] = Math.round(next.r * 255)
+      data[i + 1] = Math.round(next.g * 255)
+      data[i + 2] = Math.round(next.b * 255)
+    }
+    ctx.putImageData(imageData, 0, 0)
+  }
+}
+
 const openDb = () =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
@@ -779,6 +1353,8 @@ function App() {
   const cameraRef = useRef(null)
   const meshRef = useRef(null)
   const frameRef = useRef(null)
+  const composerRef = useRef(null)
+  const adjustmentPassRef = useRef(null)
   const maxTextureSizeRef = useRef(4096)
   const activeProjectionRef = useRef('spherical')
   const lockVerticalRef = useRef(true)
@@ -829,6 +1405,11 @@ function App() {
   const [showLocationPanel, setShowLocationPanel] = useState(true)
   const [showGpsMapOverlay, setShowGpsMapOverlay] = useState(true)
   const [isEditMode, setIsEditMode] = useState(false)
+  const [isExportPanelOpen, setIsExportPanelOpen] = useState(false)
+  const [exportMode, setExportMode] = useState('panorama')
+  const [exportAspect, setExportAspect] = useState('16:9')
+  const [exportFrameScale, setExportFrameScale] = useState(70)
+  const [exportFrameRect, setExportFrameRect] = useState(null)
   const [isMapPickerOpen, setIsMapPickerOpen] = useState(false)
   const [editedGpsCoords, setEditedGpsCoords] = useState(null)
   const [hasGpsOverride, setHasGpsOverride] = useState(false)
@@ -839,6 +1420,10 @@ function App() {
   const [pixelateMasks, setPixelateMasks] = useState([])
   const [maskEffectMode, setMaskEffectMode] = useState('blur')
   const [maskEffectStrength, setMaskEffectStrength] = useState(42)
+  const [adjustments, setAdjustments] = useState({ ...DEFAULT_ADJUSTMENTS })
+  const [lutMode, setLutMode] = useState('none')
+  const [adjustmentPreset, setAdjustmentPreset] = useState('custom')
+  const [isAdjustmentsPanelOpen, setIsAdjustmentsPanelOpen] = useState(false)
   const [maskDraft, setMaskDraft] = useState(null)
   const [isMaskDrawMode, setIsMaskDrawMode] = useState(false)
   const [viewerMaskDraft, setViewerMaskDraft] = useState(null)
@@ -935,6 +1520,86 @@ function App() {
     ],
     [language],
   )
+  const exportModeOptions = useMemo(
+    () => [
+      { value: 'panorama', label: t('strings.exportModePanorama') },
+      { value: 'photo', label: t('strings.exportModePhoto') },
+    ],
+    [language],
+  )
+  const exportAspectOptions = useMemo(
+    () => Object.keys(EXPORT_ASPECT_VALUES).map((key) => ({ value: key, label: key })),
+    [],
+  )
+  const adjustmentPresetOptions = useMemo(
+    () => [
+      { value: 'custom', label: t('strings.presetCustom') },
+      { value: 'natural', label: t('strings.presetNatural') },
+      { value: 'bw', label: t('strings.presetBw') },
+      { value: 'punchy', label: t('strings.presetPunchy') },
+      { value: 'warm', label: t('strings.presetWarm') },
+      { value: 'cool', label: t('strings.presetCool') },
+    ],
+    [language],
+  )
+  const lutOptions = useMemo(
+    () => [
+      { value: 'none', label: t('strings.lutNone') },
+      { value: 'cinematic', label: t('strings.lutCinematic') },
+      { value: 'teal_orange', label: t('strings.lutTealOrange') },
+      { value: 'vintage', label: t('strings.lutVintage') },
+    ],
+    [language],
+  )
+  const hasActiveAdjustments = useMemo(() => {
+    return (
+      Math.abs((adjustments.exposure ?? 0) - DEFAULT_ADJUSTMENTS.exposure) > 1e-4 ||
+      Math.abs((adjustments.contrast ?? 0) - DEFAULT_ADJUSTMENTS.contrast) > 1e-4 ||
+      Math.abs((adjustments.saturation ?? 1) - DEFAULT_ADJUSTMENTS.saturation) > 1e-4 ||
+      Math.abs((adjustments.temperature ?? 0) - DEFAULT_ADJUSTMENTS.temperature) > 1e-4 ||
+      Math.abs((adjustments.tint ?? 0) - DEFAULT_ADJUSTMENTS.tint) > 1e-4 ||
+      Math.abs((adjustments.sharpen ?? 0) - DEFAULT_ADJUSTMENTS.sharpen) > 1e-4 ||
+      Math.abs((adjustments.highlights ?? 0) - DEFAULT_ADJUSTMENTS.highlights) > 1e-4 ||
+      Math.abs((adjustments.shadows ?? 0) - DEFAULT_ADJUSTMENTS.shadows) > 1e-4 ||
+      Math.abs((adjustments.bloom ?? 0) - DEFAULT_ADJUSTMENTS.bloom) > 1e-4 ||
+      Math.abs((adjustments.vignette ?? 0) - DEFAULT_ADJUSTMENTS.vignette) > 1e-4 ||
+      Math.abs((adjustments.grain ?? 0) - DEFAULT_ADJUSTMENTS.grain) > 1e-4 ||
+      lutMode !== 'none'
+    )
+  }, [adjustments, lutMode])
+  const setSingleAdjustment = (key, rawValue) => {
+    const fallback = DEFAULT_ADJUSTMENTS[key] ?? 0
+    const value = toFiniteOr(rawValue, fallback)
+    setAdjustments((prev) => ({ ...prev, [key]: value }))
+    if (adjustmentPreset !== 'custom') setAdjustmentPreset('custom')
+  }
+  const resetSingleAdjustment = (key) => {
+    setAdjustments((prev) => ({ ...prev, [key]: DEFAULT_ADJUSTMENTS[key] ?? 0 }))
+    if (adjustmentPreset !== 'custom') setAdjustmentPreset('custom')
+  }
+  const applyAdjustmentPreset = (presetId) => {
+    const next = ADJUSTMENT_PRESETS[presetId]
+    setAdjustmentPreset(presetId)
+    if (!next) {
+      setLutMode('none')
+      return
+    }
+    setAdjustments({
+      exposure: toFiniteOr(next.exposure, DEFAULT_ADJUSTMENTS.exposure),
+      contrast: toFiniteOr(next.contrast, DEFAULT_ADJUSTMENTS.contrast),
+      saturation: toFiniteOr(next.saturation, DEFAULT_ADJUSTMENTS.saturation),
+      temperature: toFiniteOr(next.temperature, DEFAULT_ADJUSTMENTS.temperature),
+      tint: toFiniteOr(next.tint, DEFAULT_ADJUSTMENTS.tint),
+      highlights: toFiniteOr(next.highlights, DEFAULT_ADJUSTMENTS.highlights),
+      shadows: toFiniteOr(next.shadows, DEFAULT_ADJUSTMENTS.shadows),
+      sharpen: toFiniteOr(next.sharpen, DEFAULT_ADJUSTMENTS.sharpen),
+      bloom: toFiniteOr(next.bloom, DEFAULT_ADJUSTMENTS.bloom),
+      vignette: toFiniteOr(next.vignette, DEFAULT_ADJUSTMENTS.vignette),
+      grain: toFiniteOr(next.grain, DEFAULT_ADJUSTMENTS.grain),
+    })
+    const presetLut = typeof next.lut === 'string' ? next.lut : 'none'
+    setLutMode(LUT_MODE_VALUES[presetLut] == null ? 'none' : presetLut)
+  }
 
   useEffect(() => {
     // Diagnostic marker to verify the newest bundle is loaded (helps with PWA cache issues).
@@ -1001,7 +1666,7 @@ function App() {
     const container = containerRef.current
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(SPHERICAL_DEFAULT_FOV, 1, 1, 2000)
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
     renderer.outputColorSpace = THREE.SRGBColorSpace
 
     const getSafeSize = () => {
@@ -1016,7 +1681,19 @@ function App() {
     renderer.setSize(initialSize.width, initialSize.height)
     container.appendChild(renderer.domElement)
 
+    const composer = new EffectComposer(renderer)
+    composer.setSize(initialSize.width, initialSize.height)
+    const renderPass = new RenderPass(scene, camera)
+    const adjustmentPass = new ShaderPass(PANORAMA_ADJUST_SHADER)
+    const outputPass = new OutputPass()
+    adjustmentPass.uniforms.texelSize.value.set(1 / initialSize.width, 1 / initialSize.height)
+    composer.addPass(renderPass)
+    composer.addPass(adjustmentPass)
+    composer.addPass(outputPass)
+
     rendererRef.current = renderer
+    composerRef.current = composer
+    adjustmentPassRef.current = adjustmentPass
     sceneRef.current = scene
     cameraRef.current = camera
     maxTextureSizeRef.current = renderer.capabilities.maxTextureSize || 4096
@@ -1035,6 +1712,10 @@ function App() {
       if (!containerRef.current || !rendererRef.current || !cameraRef.current) return
       const { width, height } = getSafeSize()
       rendererRef.current.setSize(width, height)
+      if (composerRef.current) composerRef.current.setSize(width, height)
+      if (adjustmentPassRef.current) {
+        adjustmentPassRef.current.uniforms.texelSize.value.set(1 / width, 1 / height)
+      }
       cameraRef.current.aspect = width / height
       cameraRef.current.updateProjectionMatrix()
     }
@@ -1061,7 +1742,8 @@ function App() {
     const animate = () => {
       frameRef.current = requestAnimationFrame(animate)
       updateCamera()
-      renderer.render(scene, camera)
+      if (composerRef.current) composerRef.current.render()
+      else renderer.render(scene, camera)
     }
 
     const onPointerDown = (event) => {
@@ -1127,6 +1809,8 @@ function App() {
         meshRef.current.material.dispose()
         meshRef.current.geometry.dispose()
       }
+      composerRef.current = null
+      adjustmentPassRef.current = null
       renderer.dispose()
 
       if (renderer.domElement.parentNode === container) {
@@ -1187,6 +1871,13 @@ function App() {
           if (s.panelSortOrder) setPanelSortOrder(s.panelSortOrder)
           if (s.panelContentMode === 'folders' || s.panelContentMode === 'panoramas') {
             setPanelContentMode(s.panelContentMode)
+          }
+          if (typeof s.exportAspect === 'string' && EXPORT_ASPECT_VALUES[s.exportAspect]) {
+            setExportAspect(s.exportAspect)
+          }
+          if (Number.isFinite(Number(s.exportFrameScale))) {
+            const scale = Math.max(30, Math.min(100, Number(s.exportFrameScale)))
+            setExportFrameScale(Math.round(scale))
           }
           if (s.collapsedGroups && typeof s.collapsedGroups === 'object') {
             const nextCollapsed = {}
@@ -1305,6 +1996,8 @@ function App() {
       homeSortOrder,
       panelSortOrder,
       panelContentMode,
+      exportAspect,
+      exportFrameScale,
       collapsedGroups,
     }
     dbPut(db, SETTINGS_STORE, { key: 'app', value }).catch(() => {})
@@ -1322,6 +2015,8 @@ function App() {
     homeSortOrder,
     panelSortOrder,
     panelContentMode,
+    exportAspect,
+    exportFrameScale,
     collapsedGroups,
   ])
 
@@ -1383,6 +2078,76 @@ function App() {
   useEffect(() => {
     lockVerticalRef.current = lockVertical
   }, [lockVertical])
+
+  useEffect(() => {
+    if (!isEditMode) {
+      setIsAdjustmentsPanelOpen(false)
+      setIsExportPanelOpen(false)
+    }
+  }, [isEditMode])
+
+  useEffect(() => {
+    if (!hasActivePanorama) {
+      setIsExportPanelOpen(false)
+    }
+  }, [hasActivePanorama])
+
+  const getExportAspectValue = (aspectKey) => EXPORT_ASPECT_VALUES[aspectKey] || EXPORT_ASPECT_VALUES['16:9']
+
+  const computeExportFrameRect = (boundsWidth, boundsHeight, aspectKey, scalePercent) => {
+    const safeW = Math.max(1, boundsWidth)
+    const safeH = Math.max(1, boundsHeight)
+    const aspect = getExportAspectValue(aspectKey)
+    const scale = Math.min(100, Math.max(20, Number(scalePercent) || 70)) / 100
+    const maxW = safeW * scale
+    const maxH = safeH * scale
+    let width = maxW
+    let height = width / aspect
+    if (height > maxH) {
+      height = maxH
+      width = height * aspect
+    }
+    width = Math.max(24, Math.min(width, safeW))
+    height = Math.max(24, Math.min(height, safeH))
+    const centerX = safeW / 2
+    const centerY = safeH / 2
+    const x = Math.min(safeW - width, Math.max(0, centerX - width / 2))
+    const y = Math.min(safeH - height, Math.max(0, centerY - height / 2))
+    return { x, y, width, height }
+  }
+
+  useEffect(() => {
+    if (!hasActivePanorama || !isEditMode || !isExportPanelOpen || exportMode !== 'photo') {
+      setExportFrameRect(null)
+      return
+    }
+    const updateFrame = () => {
+      const container = containerRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      setExportFrameRect(computeExportFrameRect(rect.width, rect.height, exportAspect, exportFrameScale))
+    }
+    updateFrame()
+    window.addEventListener('resize', updateFrame)
+    return () => window.removeEventListener('resize', updateFrame)
+  }, [hasActivePanorama, isEditMode, isExportPanelOpen, exportMode, exportAspect, exportFrameScale])
+
+  useEffect(() => {
+    const pass = adjustmentPassRef.current
+    if (!pass) return
+    pass.uniforms.exposure.value = toFiniteOr(adjustments.exposure, 0)
+    pass.uniforms.contrast.value = toFiniteOr(adjustments.contrast, 0)
+    pass.uniforms.saturation.value = toFiniteOr(adjustments.saturation, 1)
+    pass.uniforms.temperature.value = toFiniteOr(adjustments.temperature, 0)
+    pass.uniforms.tint.value = toFiniteOr(adjustments.tint, 0)
+    pass.uniforms.highlights.value = toFiniteOr(adjustments.highlights, 0)
+    pass.uniforms.shadows.value = toFiniteOr(adjustments.shadows, 0)
+    pass.uniforms.sharpen.value = toFiniteOr(adjustments.sharpen, 0)
+    pass.uniforms.bloom.value = toFiniteOr(adjustments.bloom, 0)
+    pass.uniforms.vignette.value = toFiniteOr(adjustments.vignette, 0)
+    pass.uniforms.grain.value = toFiniteOr(adjustments.grain, 0)
+    pass.uniforms.lutMode.value = LUT_MODE_VALUES[lutMode] ?? LUT_MODE_VALUES.none
+  }, [adjustments, lutMode])
 
   const preventDefaults = (event) => {
     event.preventDefault()
@@ -3218,16 +3983,17 @@ function App() {
       try {
         const providers = [
           {
-            url: `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=12&addressdetails=1`,
-            parse: (payload) => pickLocalityFromAddress(payload?.address || {}),
-          },
-          {
-            // Photon (OSM-based) fallback for cases when Nominatim blocks browser CORS/rate-limits.
+            // Photon (OSM-based) works reliably from browser and reduces CORS/rate-limit noise in console.
             url: `https://photon.komoot.io/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&lang=${encodeURIComponent(language === 'pl' ? 'pl' : 'en')}`,
             parse: (payload) => {
               const props = payload?.features?.[0]?.properties || {}
               return props.city || props.name || props.county || props.state || ''
             },
+          },
+          {
+            // Nominatim fallback.
+            url: `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=12&addressdetails=1`,
+            parse: (payload) => pickLocalityFromAddress(payload?.address || {}),
           },
         ]
 
@@ -3627,6 +4393,7 @@ function App() {
     const ctx = canvas.getContext('2d', { alpha: false })
     if (!ctx) return
     ctx.drawImage(image, 0, 0, width, height)
+    applyGlobalAdjustmentsToCanvas(canvas, ctx, adjustments, lutMode)
 
     const maskCount = Array.isArray(pixelateMasks) ? pixelateMasks.length : 0
     const effectStrength = Math.max(4, Number(maskEffectStrength) || 32)
@@ -3682,6 +4449,63 @@ function App() {
     a.download = `${baseName}-edited.jpg`
     a.click()
     setStatus(`${t('strings.editedExportDone')} (masks: ${maskCount}, ${maskEffectMode})`)
+  }
+
+  const exportPhotoJpeg = () => {
+    const renderer = rendererRef.current
+    const meta = loadedMetaRef.current
+    const frame = exportFrameRect
+    if (!renderer || !frame || exportMode !== 'photo') return
+    if (composerRef.current) composerRef.current.render()
+    else if (sceneRef.current && cameraRef.current) renderer.render(sceneRef.current, cameraRef.current)
+    const source = renderer.domElement
+    const viewRect = source.getBoundingClientRect()
+    if (!viewRect.width || !viewRect.height) return
+
+    const scaleX = source.width / viewRect.width
+    const scaleY = source.height / viewRect.height
+    const sx = Math.round(Math.max(0, frame.x * scaleX))
+    const sy = Math.round(Math.max(0, frame.y * scaleY))
+    const sw = Math.round(Math.max(1, Math.min(source.width - sx, frame.width * scaleX)))
+    const sh = Math.round(Math.max(1, Math.min(source.height - sy, frame.height * scaleY)))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = sw
+    canvas.height = sh
+    const ctx = canvas.getContext('2d', { alpha: false })
+    if (!ctx) return
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh)
+
+    const maskCount = Array.isArray(projectedMaskPreviews) ? projectedMaskPreviews.length : 0
+    const effectStrength = Math.max(4, Number(maskEffectStrength) || 32)
+    const useBlur = maskEffectMode === 'blur'
+    if (maskCount > 0) {
+      for (const mask of projectedMaskPreviews) {
+        if (!Array.isArray(mask?.points) || mask.points.length < 3) continue
+        const pointsPx = mask.points
+          .map((p) => {
+            const nx = Number(p?.x)
+            const ny = Number(p?.y)
+            if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null
+            const srcX = nx * source.width
+            const srcY = ny * source.height
+            return { x: srcX - sx, y: srcY - sy }
+          })
+          .filter(Boolean)
+        if (pointsPx.length < 3) continue
+        if (useBlur) applyBlurToPolygon(canvas, ctx, pointsPx, effectStrength)
+        else applyPixelateToPolygon(canvas, ctx, pointsPx, effectStrength)
+      }
+    }
+
+    const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95)
+    const a = document.createElement('a')
+    const baseName = String(meta?.name || 'panorama').replace(/\.[^.]+$/, '')
+    const safeAspect = String(exportAspect).replace(':', 'x')
+    a.href = jpegDataUrl
+    a.download = `${baseName}-photo-${safeAspect}.jpg`
+    a.click()
+    setStatus(`${t('strings.exportPhotoJpeg')} (${exportAspect}, masks: ${maskCount})`)
   }
 
   const projectedMaskPreviews = useMemo(() => {
@@ -4188,6 +5012,23 @@ function App() {
     setMaskDraft(null)
     setResolvedLocality('')
     setIsResolvingLocality(false)
+  }
+
+  const openPhotoFrameMode = () => {
+    if (!hasActivePanorama) return
+    setIsEditMode(true)
+    setIsExportPanelOpen(true)
+    setExportMode('photo')
+  }
+  const isPhotoModeActive = isEditMode && isExportPanelOpen && exportMode === 'photo'
+  const togglePhotoFrameMode = () => {
+    if (!hasActivePanorama) return
+    if (isPhotoModeActive) {
+      setIsExportPanelOpen(false)
+      setExportMode('panorama')
+      return
+    }
+    openPhotoFrameMode()
   }
 
   const openPanoramaFromLibrary = async (item) => {
@@ -4893,6 +5734,15 @@ function App() {
         </label>
         <button
           type="button"
+          className={`toolbar-photo-btn ${isPhotoModeActive ? 'is-active' : ''}`}
+          disabled={!hasActivePanorama}
+          aria-label={t('strings.openPhotoFrame')}
+          onClick={togglePhotoFrameMode}
+        >
+          {t('strings.photoFromPanorama')}
+        </button>
+        <button
+          type="button"
           className={`toolbar-edit-btn ${isEditMode ? 'is-active' : ''}`}
           disabled={!hasActivePanorama}
           aria-label={isEditMode ? t('strings.closeEdit') : t('strings.editPanorama')}
@@ -5042,6 +5892,19 @@ function App() {
             )}
           </div>
         )}
+        {hasActivePanorama && isEditMode && isExportPanelOpen && exportMode === 'photo' && exportFrameRect && (
+          <div className="photo-export-overlay" aria-hidden="true">
+            <div
+              className="photo-export-frame"
+              style={{
+                left: `${exportFrameRect.x}px`,
+                top: `${exportFrameRect.y}px`,
+                width: `${exportFrameRect.width}px`,
+                height: `${exportFrameRect.height}px`,
+              }}
+            />
+          </div>
+        )}
         {hasActivePanorama && (
           <>
             <button
@@ -5055,137 +5918,340 @@ function App() {
             {isEditMode && (
               <section className="edit-panel" aria-label={t('strings.editPanelTitle')}>
                 <h3>{t('strings.editPanelTitle')}</h3>
-                <div className="edit-section">
-                  <div className="edit-section-head">
-                    <span>{t('strings.editSectionGps')}</span>
-                  </div>
-                  <div className="edit-gps-row">
-                    <label>
-                      {t('strings.lat')}
-                      <input
-                        type="text"
-                        value={latInput}
-                        onChange={(event) => setLatInput(event.target.value)}
-                        onBlur={applyManualGpsInputs}
-                      />
-                    </label>
-                    <label>
-                      {t('strings.lon')}
-                      <input
-                        type="text"
-                        value={lonInput}
-                        onChange={(event) => setLonInput(event.target.value)}
-                        onBlur={applyManualGpsInputs}
-                      />
-                    </label>
-                  </div>
-                  <div className="edit-actions">
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => runWithGpsOverrideGuard(() => setIsMapPickerOpen(true))}
-                    >
-                      {t('strings.pickGpsOnMap')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() =>
-                        runWithGpsOverrideGuard(() => {
-                          setEditedGpsCoords(null)
-                          setHasGpsOverride(true)
-                        })
-                      }
-                    >
-                      {t('strings.removeGps')}
-                    </button>
-                  </div>
-                  <div
-                    className={`gps-photo-dropzone ${isGpsPhotoDragging ? 'is-active' : ''}`}
-                    onDragEnter={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      setIsGpsPhotoDragging(true)
-                    }}
-                    onDragOver={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                    }}
-                    onDragLeave={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      setIsGpsPhotoDragging(false)
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      setIsGpsPhotoDragging(false)
-                      const file = event.dataTransfer?.files?.[0]
-                      if (file) applyGpsFromReferencePhoto(file)
-                    }}
-                    onClick={() => gpsPhotoInputRef.current?.click()}
-                  >
-                    <strong>{t('strings.gpsFromPhoto')}</strong>
-                    <span>{t('strings.gpsFromPhotoHint')}</span>
-                  </div>
-                </div>
-
-                <div className="edit-section">
-                  <div className="edit-section-head">
-                    <span>{t('strings.editSectionMasks')}</span>
-                  </div>
-                  <div className="edit-actions">
-                    <button
-                      type="button"
-                      className={`secondary-btn ${isMaskDrawMode ? 'is-active' : ''}`}
-                      onClick={() => {
-                        setIsMaskDrawMode((prev) => !prev)
-                        setViewerMaskDraft(null)
-                        viewerMaskDragRef.current = null
-                      }}
-                    >
-                      {isMaskDrawMode ? t('strings.stopDrawing') : t('strings.drawOnPanorama')}
-                    </button>
-                    <button type="button" className="secondary-btn" onClick={() => setPixelateMasks([])}>
-                      {t('strings.clearMasks')}
-                    </button>
-                  </div>
-                  <div className="edit-mask-count">
-                    {t('strings.maskCount')}: <strong>{pixelateMasks.length}</strong>
-                  </div>
-                  <div className="edit-mask-controls">
-                    <AnimatedDropdown
-                      label={t('strings.maskEffect')}
-                      value={maskEffectMode}
-                      options={maskEffectOptions}
-                      onChange={setMaskEffectMode}
-                    />
-                    <label>
-                      <span>
-                        {t('strings.maskStrength')}: <strong>{maskEffectStrength}</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min="8"
-                        max="72"
-                        step="1"
-                        value={maskEffectStrength}
-                        onChange={(event) => setMaskEffectStrength(Number(event.target.value))}
-                      />
-                    </label>
-                  </div>
-                  {pixelateMasks.length > 0 && (
-                    <div className="edit-mask-list">
-                      {pixelateMasks.map((mask, index) => (
-                        <div key={mask.id} className="edit-mask-item">
-                          <span>#{index + 1}</span>
-                          <button type="button" className="mask-mini-remove" onClick={() => removeMask(mask.id)}>
-                            x
-                          </button>
-                        </div>
-                      ))}
+                {!isAdjustmentsPanelOpen && (
+                  <>
+                    <div className="edit-section">
+                      <div className="edit-section-head">
+                        <span>{t('strings.editSectionGps')}</span>
+                      </div>
+                      <div className="edit-gps-row">
+                        <label>
+                          {t('strings.lat')}
+                          <input
+                            type="text"
+                            value={latInput}
+                            onChange={(event) => setLatInput(event.target.value)}
+                            onBlur={applyManualGpsInputs}
+                          />
+                        </label>
+                        <label>
+                          {t('strings.lon')}
+                          <input
+                            type="text"
+                            value={lonInput}
+                            onChange={(event) => setLonInput(event.target.value)}
+                            onBlur={applyManualGpsInputs}
+                          />
+                        </label>
+                      </div>
+                      <div className="edit-actions">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => runWithGpsOverrideGuard(() => setIsMapPickerOpen(true))}
+                        >
+                          {t('strings.pickGpsOnMap')}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() =>
+                            runWithGpsOverrideGuard(() => {
+                              setEditedGpsCoords(null)
+                              setHasGpsOverride(true)
+                            })
+                          }
+                        >
+                          {t('strings.removeGps')}
+                        </button>
+                      </div>
+                      <div
+                        className={`gps-photo-dropzone ${isGpsPhotoDragging ? 'is-active' : ''}`}
+                        onDragEnter={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setIsGpsPhotoDragging(true)
+                        }}
+                        onDragOver={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                        }}
+                        onDragLeave={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setIsGpsPhotoDragging(false)
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setIsGpsPhotoDragging(false)
+                          const file = event.dataTransfer?.files?.[0]
+                          if (file) applyGpsFromReferencePhoto(file)
+                        }}
+                        onClick={() => gpsPhotoInputRef.current?.click()}
+                      >
+                        <strong>{t('strings.gpsFromPhoto')}</strong>
+                        <span>{t('strings.gpsFromPhotoHint')}</span>
+                      </div>
                     </div>
-                  )}
+
+                    <div className="edit-section">
+                      <div className="edit-section-head">
+                        <span>{t('strings.editSectionMasks')}</span>
+                      </div>
+                      <div className="edit-actions">
+                        <button
+                          type="button"
+                          className={`secondary-btn ${isMaskDrawMode ? 'is-active' : ''}`}
+                          onClick={() => {
+                            setIsMaskDrawMode((prev) => !prev)
+                            setViewerMaskDraft(null)
+                            viewerMaskDragRef.current = null
+                          }}
+                        >
+                          {isMaskDrawMode ? t('strings.stopDrawing') : t('strings.drawOnPanorama')}
+                        </button>
+                        <button type="button" className="secondary-btn" onClick={() => setPixelateMasks([])}>
+                          {t('strings.clearMasks')}
+                        </button>
+                      </div>
+                      <div className="edit-mask-count">
+                        {t('strings.maskCount')}: <strong>{pixelateMasks.length}</strong>
+                      </div>
+                      <div className="edit-mask-controls">
+                        <AnimatedDropdown
+                          label={t('strings.maskEffect')}
+                          value={maskEffectMode}
+                          options={maskEffectOptions}
+                          onChange={setMaskEffectMode}
+                        />
+                        <label>
+                          <span>
+                            {t('strings.maskStrength')}: <strong>{maskEffectStrength}</strong>
+                          </span>
+                          <input
+                            type="range"
+                            min="8"
+                            max="72"
+                            step="1"
+                            value={maskEffectStrength}
+                            onChange={(event) => setMaskEffectStrength(Number(event.target.value))}
+                          />
+                        </label>
+                      </div>
+                      {pixelateMasks.length > 0 && (
+                        <div className="edit-mask-list">
+                          {pixelateMasks.map((mask, index) => (
+                            <div key={mask.id} className="edit-mask-item">
+                              <span>#{index + 1}</span>
+                              <button type="button" className="mask-mini-remove" onClick={() => removeMask(mask.id)}>
+                                x
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                <div className={`edit-bottom-drawer ${isAdjustmentsPanelOpen ? 'is-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="edit-bottom-drawer-toggle"
+                    onClick={() => setIsAdjustmentsPanelOpen((prev) => !prev)}
+                    aria-expanded={isAdjustmentsPanelOpen}
+                  >
+                    <span>{t('strings.editSectionAdjustments')}</span>
+                    <span className="edit-bottom-drawer-chevron">{isAdjustmentsPanelOpen ? '^' : 'v'}</span>
+                  </button>
+                  <div className="edit-bottom-drawer-body">
+                    <div className="edit-mask-controls">
+                      <AnimatedDropdown
+                        label={t('strings.adjustmentPreset')}
+                        value={adjustmentPreset}
+                        options={adjustmentPresetOptions}
+                        onChange={applyAdjustmentPreset}
+                      />
+                      <AnimatedDropdown
+                        label={t('strings.lut')}
+                        value={lutMode}
+                        options={lutOptions}
+                        onChange={(nextValue) => {
+                          setLutMode(nextValue)
+                          if (adjustmentPreset !== 'custom') setAdjustmentPreset('custom')
+                        }}
+                      />
+                      <label>
+                        <span>
+                          {t('strings.exposure')}: <strong>{adjustments.exposure.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="-2"
+                          max="2"
+                          step="0.05"
+                          value={adjustments.exposure}
+                          onChange={(event) => setSingleAdjustment('exposure', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('exposure')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.contrast')}: <strong>{adjustments.contrast.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="-1"
+                          max="1"
+                          step="0.02"
+                          value={adjustments.contrast}
+                          onChange={(event) => setSingleAdjustment('contrast', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('contrast')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.saturation')}: <strong>{adjustments.saturation.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="2"
+                          step="0.02"
+                          value={adjustments.saturation}
+                          onChange={(event) => setSingleAdjustment('saturation', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('saturation')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.whiteBalance')}: <strong>{adjustments.temperature.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="-1"
+                          max="1"
+                          step="0.02"
+                          value={adjustments.temperature}
+                          onChange={(event) => setSingleAdjustment('temperature', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('temperature')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.tint')}: <strong>{adjustments.tint.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="-1"
+                          max="1"
+                          step="0.02"
+                          value={adjustments.tint}
+                          onChange={(event) => setSingleAdjustment('tint', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('tint')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.highlights')}: <strong>{adjustments.highlights.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="-1"
+                          max="1"
+                          step="0.02"
+                          value={adjustments.highlights}
+                          onChange={(event) => setSingleAdjustment('highlights', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('highlights')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.shadows')}: <strong>{adjustments.shadows.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="-1"
+                          max="1"
+                          step="0.02"
+                          value={adjustments.shadows}
+                          onChange={(event) => setSingleAdjustment('shadows', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('shadows')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.sharpen')}: <strong>{adjustments.sharpen.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="2"
+                          step="0.02"
+                          value={adjustments.sharpen}
+                          onChange={(event) => setSingleAdjustment('sharpen', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('sharpen')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.bloom')}: <strong>{adjustments.bloom.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={adjustments.bloom}
+                          onChange={(event) => setSingleAdjustment('bloom', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('bloom')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.vignette')}: <strong>{adjustments.vignette.toFixed(2)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={adjustments.vignette}
+                          onChange={(event) => setSingleAdjustment('vignette', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('vignette')}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t('strings.grain')}: <strong>{adjustments.grain.toFixed(3)}</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="0.3"
+                          step="0.005"
+                          value={adjustments.grain}
+                          onChange={(event) => setSingleAdjustment('grain', event.target.value)}
+                          onDoubleClick={() => resetSingleAdjustment('grain')}
+                        />
+                      </label>
+                    </div>
+                    <div className="edit-actions">
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        disabled={!hasActiveAdjustments}
+                        onClick={() => {
+                          setAdjustments({ ...DEFAULT_ADJUSTMENTS })
+                          setAdjustmentPreset('custom')
+                          setLutMode('none')
+                        }}
+                      >
+                        {t('strings.resetAdjustments')}
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <input
@@ -5203,9 +6269,67 @@ function App() {
                   <button type="button" className="secondary-btn" onClick={() => setIsEditMode(false)}>
                     {t('strings.cancel')}
                   </button>
-                  <button type="button" className="primary-btn" onClick={exportEditedJpeg}>
-                    {t('strings.exportEditedJpeg')}
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={() => {
+                      setIsExportPanelOpen((prev) => !prev)
+                      if (exportMode !== 'panorama' && exportMode !== 'photo') setExportMode('panorama')
+                    }}
+                  >
+                    {t('strings.openExportPanel')}
                   </button>
+                </div>
+              </section>
+            )}
+            {isEditMode && isExportPanelOpen && (
+              <section className="export-panel" aria-label={t('strings.exportPanelTitle')}>
+                <h3>{t('strings.exportPanelTitle')}</h3>
+                <div className="edit-mask-controls">
+                  <AnimatedDropdown
+                    label={t('strings.exportMode')}
+                    value={exportMode}
+                    options={exportModeOptions}
+                    onChange={(nextValue) => setExportMode(nextValue)}
+                  />
+                  {exportMode === 'photo' && (
+                    <>
+                      <AnimatedDropdown
+                        label={t('strings.exportAspect')}
+                        value={exportAspect}
+                        options={exportAspectOptions}
+                        onChange={setExportAspect}
+                      />
+                      <label>
+                        <span>
+                          {t('strings.exportFrameSize')}: <strong>{exportFrameScale}%</strong>
+                        </span>
+                        <input
+                          type="range"
+                          min="30"
+                          max="100"
+                          step="1"
+                          value={exportFrameScale}
+                          onChange={(event) => setExportFrameScale(Number(event.target.value))}
+                        />
+                      </label>
+                      <p className="export-frame-hint">{t('strings.exportFrameHint')}</p>
+                    </>
+                  )}
+                </div>
+                <div className="edit-actions export-panel-actions">
+                  <button type="button" className="secondary-btn" onClick={() => setIsExportPanelOpen(false)}>
+                    {t('strings.cancel')}
+                  </button>
+                  {exportMode === 'photo' ? (
+                    <button type="button" className="primary-btn" onClick={exportPhotoJpeg}>
+                      {t('strings.exportPhotoJpeg')}
+                    </button>
+                  ) : (
+                    <button type="button" className="primary-btn" onClick={exportEditedJpeg}>
+                      {t('strings.exportEditedJpeg')}
+                    </button>
+                  )}
                 </div>
               </section>
             )}
@@ -5685,6 +6809,19 @@ function App() {
                 <span className="cm-icon cm-image" />
                 <span>{t('strings.openImage')}</span>
               </button>
+              {hasActivePanorama && (
+                <button
+                  type="button"
+                  className="context-menu-item"
+                  onClick={() => {
+                    openPhotoFrameMode()
+                    closeContextMenuAfterMenuAction()
+                  }}
+                >
+                  <span className="cm-icon cm-image" />
+                  <span>{t('strings.openPhotoFrame')}</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="context-menu-item"
@@ -6159,5 +7296,6 @@ function App() {
 }
 
 export default App
+
 
 

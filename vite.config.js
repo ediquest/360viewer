@@ -47,4 +47,20 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('/three/examples/')) return 'vendor-three-examples'
+          if (id.includes('/three/')) return 'vendor-three-core'
+          if (id.includes('/react/') || id.includes('/react-dom/')) return 'vendor-react'
+          if (id.includes('/leaflet/')) return 'vendor-leaflet'
+          if (id.includes('/exifr/')) return 'vendor-exifr'
+          if (id.includes('/piexifjs/')) return 'vendor-piexif'
+          return 'vendor'
+        },
+      },
+    },
+  },
 })
